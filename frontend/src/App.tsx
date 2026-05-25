@@ -422,26 +422,29 @@ function App() {
   const runningJobs = Object.values(activeJobs).filter(job => job.status === 'running');
   
   let totalSpeedBytes = 0;
-  let totalElapsedSeconds = 0;
-  let maxRemainingSeconds = 0;
+  let maxElapsedSeconds = 0;
+  let totalRemainingSeconds = 0;
   let hasValidETA = false;
   
   runningJobs.forEach(job => {
     totalSpeedBytes += parseSpeed(job.speed);
-    totalElapsedSeconds += parseElapsedTime(job.elapsedTime);
+    
+    const elapsedSec = parseElapsedTime(job.elapsedTime);
+    if (elapsedSec > maxElapsedSeconds) {
+      maxElapsedSeconds = elapsedSec;
+    }
     
     const etaSec = parseETA(job.eta);
     if (etaSec !== null) {
       hasValidETA = true;
-      if (etaSec > maxRemainingSeconds) {
-        maxRemainingSeconds = etaSec;
-      }
+      totalRemainingSeconds += etaSec;
     }
   });
   
-  const totalSpeed = formatSpeed(totalSpeedBytes);
-  const totalElapsed = formatElapsedTime(totalElapsedSeconds);
-  const totalRemaining = hasValidETA ? formatElapsedTime(maxRemainingSeconds) : '-';
+  const avgSpeedBytes = runningJobs.length > 0 ? totalSpeedBytes / runningJobs.length : 0;
+  const avgSpeedFormatted = formatSpeed(avgSpeedBytes);
+  const maxElapsedFormatted = formatElapsedTime(maxElapsedSeconds);
+  const totalRemainingFormatted = hasValidETA ? formatElapsedTime(totalRemainingSeconds) : '-';
 
   return (
     <div className="app-container">
@@ -618,9 +621,9 @@ function App() {
                 Aggregate Summary ({runningJobs.length} running)
               </div>
               <div style={{ display: 'flex', gap: '16px', color: '#aaa' }}>
-                <div>Total Speed: <strong style={{ color: '#fff' }}>{totalSpeed}</strong></div>
-                <div>Total Elapsed: <strong style={{ color: '#fff' }}>{totalElapsed}</strong></div>
-                <div>Remaining: <strong style={{ color: '#fff' }}>{totalRemaining}</strong></div>
+                <div>Avg Speed: <strong style={{ color: '#fff' }}>{avgSpeedFormatted}</strong></div>
+                <div>Max Elapsed: <strong style={{ color: '#fff' }}>{maxElapsedFormatted}</strong></div>
+                <div>Total Remaining: <strong style={{ color: '#fff' }}>{totalRemainingFormatted}</strong></div>
               </div>
             </div>
           )}
