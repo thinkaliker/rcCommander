@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  rclone-commander:
-    image: ghcr.io/thinkaliker/rclonecommander:latest
-    container_name: rclone-commander
+  rcCommander:
+    image: ghcr.io/thinkaliker/rccommander:latest
+    container_name: rcCommander
     # PUID/PGID allow the container to match your host user permissions
     environment:
       - NODE_ENV=production

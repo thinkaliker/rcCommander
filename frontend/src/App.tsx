@@ -8,6 +8,13 @@ const API_BASE = import.meta.env.DEV
   ? `http://${window.location.hostname}:3001/api`
   : '/api';
 
+// Helper to extract the last non-empty path segment, handling both Unix and Windows slashes, and trailing slashes
+const getFileName = (pathStr: string) => {
+  if (!pathStr) return '';
+  const parts = pathStr.split(/[/\\]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : '/';
+};
+
 function App() {
   const [remotes, setRemotes] = useState<string[]>([]);
 
@@ -284,6 +291,35 @@ function App() {
     }
   };
 
+  const handleRestartJob = async (jobId: string) => {
+    try {
+      await fetch(`${API_BASE}/copy/restart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId })
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDismissJob = async (jobId: string) => {
+    try {
+      await fetch(`${API_BASE}/copy/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId })
+      });
+      setActiveJobs(prev => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleMkdir = async () => {
     if (!mkdirState || !mkdirFolderName) return;
     try {
@@ -467,12 +503,16 @@ function App() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {Object.values(activeJobs).map(job => (
-              <div key={job.id} className="job-item" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div className="job-item-info" style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#ccc', marginBottom: '6px' }}>
-                      <span style={{ maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.source.split('/').pop()} ➡️ {job.destination.split('/').pop() || '/'}</span>
-                      <span style={{ color: job.status === 'error' ? 'var(--danger)' : '#aaa' }}>{job.progress}</span>
+              <div key={job.id} className="job-item" style={{ flexDirection: 'column', alignItems: 'stretch', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', minWidth: 0 }}>
+                  <div className="job-item-info" style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: '#ccc', marginBottom: '6px', minWidth: 0 }}>
+                      <span style={{ maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${job.source} ➡️ ${job.destination}`}>
+                        {getFileName(job.source)} ➡️ {getFileName(job.destination)}
+                      </span>
+                      <span style={{ color: job.status === 'error' ? 'var(--danger)' : '#aaa', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%', marginLeft: '10px' }} title={job.progress}>
+                        {job.progress}
+                      </span>
                     </div>
                     <div className="progress-bar-container">
                       <div className="progress-bar-fill" style={{ width: `${job.progress.match(/([0-9.]+)%/)?.[1] || (job.status === 'completed' ? 100 : 0)}%`, background: job.status === 'error' ? 'var(--danger)' : 'var(--accent)' }}></div>
@@ -483,9 +523,20 @@ function App() {
                       </div>
                     )}
                   </div>
-                  {job.status === 'running' && (
-                    <button className="btn-primary" style={{ background: 'var(--danger)', padding: '6px 12px', fontSize: '0.8rem', boxShadow: 'none' }} onClick={() => handleStopJob(job.id)}>Stop</button>
-                  )}
+                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                    {job.status === 'running' && (
+                      <button className="btn-primary" style={{ background: 'var(--danger)', padding: '6px 12px', fontSize: '0.8rem', boxShadow: 'none' }} onClick={() => handleStopJob(job.id)}>Stop</button>
+                    )}
+                    {job.status === 'error' && (
+                      <>
+                        <button className="btn-primary" style={{ background: 'var(--accent)', color: 'var(--bg-primary)', padding: '6px 12px', fontSize: '0.8rem', boxShadow: 'none' }} onClick={() => handleRestartJob(job.id)}>Restart</button>
+                        <button className="btn-primary" style={{ background: '#555', color: '#fff', padding: '6px 12px', fontSize: '0.8rem', boxShadow: 'none' }} onClick={() => handleDismissJob(job.id)}>Dismiss</button>
+                      </>
+                    )}
+                    {job.status === 'completed' && (
+                      <button className="btn-primary" style={{ background: '#555', color: '#fff', padding: '6px 12px', fontSize: '0.8rem', boxShadow: 'none' }} onClick={() => handleDismissJob(job.id)}>Dismiss</button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

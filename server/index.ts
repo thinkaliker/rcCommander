@@ -105,6 +105,70 @@ app.post('/api/mkdir', async (req, res) => {
   }
 });
 
+function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThreads: number) {
+  const child = spawn('rclone', [
+    'copy',
+    srcPath,
+    destPath,
+    '--progress',
+    '--stats=1s',
+    `--transfers=${numThreads}`
+  ]);
+
+  activeProcesses[jobId] = child;
+
+  let lastError = '';
+  const handleProgress = (data: any) => {
+    if (!activeJobs[jobId]) return;
+    const output = data.toString();
+
+    // Capture potential error messages
+    const lines = output.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.includes('ERROR :') || trimmed.includes('Failed to') || (trimmed.length > 0 && !trimmed.match(/[0-9.]%/))) {
+        if (trimmed.includes('ERROR :') || trimmed.includes('Failed to')) {
+            lastError = trimmed;
+        }
+      }
+    }
+
+    const match = output.match(/([0-9.]+)%/);
+    if (match) {
+      activeJobs[jobId].progress = `${parseFloat(match[1])}%`;
+    } else {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (line.length > 0 && line.includes('Transferred:')) {
+          activeJobs[jobId].progress = line;
+          break;
+        }
+      }
+    }
+  };
+
+  child.stdout.on('data', handleProgress);
+  child.stderr.on('data', handleProgress);
+
+  child.on('close', (code) => {
+    if (!activeJobs[jobId]) return;
+    activeJobs[jobId].status = code === 0 ? 'completed' : 'error';
+    if (code === 0) {
+      activeJobs[jobId].progress = '100%';
+    } else {
+      activeJobs[jobId].error = lastError || `Exited with code ${code}`;
+    }
+
+    const delay = activeJobs[jobId].autoRemoveSeconds;
+    // Only auto-remove if completed successfully, not if error!
+    if (activeJobs[jobId].status === 'completed' && delay && delay > 0) {
+      setTimeout(() => {
+        delete activeJobs[jobId];
+      }, delay * 1000);
+    }
+  });
+}
+
 app.post('/api/copy', (req, res) => {
   const { source, destination, threads, autoRemoveSeconds } = req.body;
 
@@ -134,66 +198,7 @@ app.post('/api/copy', (req, res) => {
     autoRemoveSeconds: autoRemoveSeconds !== undefined ? autoRemoveSeconds : 5,
   };
 
-  const child = spawn('rclone', [
-    'copy',
-    srcPath,
-    destPath,
-    '--progress',
-    '--stats=1s',
-    `--transfers=${numThreads}`
-  ]);
-
-  activeProcesses[jobId] = child;
-
-  let lastError = '';
-  const handleProgress = (data: any) => {
-    if (!activeJobs[jobId]) return;
-    const output = data.toString();
-
-    // Capture potential error messages
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.includes('ERROR :') || trimmed.includes('Failed to') || (trimmed.length > 0 && !trimmed.match(/[0-9.]%/))) {
-        // If it's not a progress line, it might be an error or important status
-        if (trimmed.includes('ERROR :') || trimmed.includes('Failed to')) {
-            lastError = trimmed;
-        }
-      }
-    }
-
-    const match = output.match(/([0-9.]+)%/);
-    if (match) {
-      activeJobs[jobId].progress = `${parseFloat(match[1])}%`;
-    } else {
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (line.length > 0 && line.includes('Transferred:')) {
-          activeJobs[jobId].progress = line;
-          break;
-        }
-      }
-    }
-  };
-
-  child.stdout.on('data', handleProgress);
-  child.stderr.on('data', handleProgress);
-
-  child.on('close', (code) => {
-    activeJobs[jobId].status = code === 0 ? 'completed' : 'error';
-    if (code === 0) {
-      activeJobs[jobId].progress = '100%';
-    } else {
-      activeJobs[jobId].error = lastError || `Exited with code ${code}`;
-    }
-
-    const delay = activeJobs[jobId].autoRemoveSeconds;
-    if (delay && delay > 0) {
-      setTimeout(() => {
-        delete activeJobs[jobId];
-      }, delay * 1000);
-    }
-  });
+  startRcloneJob(jobId, srcPath, destPath, numThreads);
 
   res.json({ jobId, message: 'Copy job started' });
 });
@@ -215,6 +220,41 @@ app.post('/api/copy/stop', (req, res) => {
   } else {
     res.status(404).json({ error: 'Job not found' });
   }
+});
+
+app.post('/api/copy/remove', (req, res) => {
+  const { jobId } = req.body;
+  if (activeJobs[jobId]) {
+    if (activeProcesses[jobId]) {
+      activeProcesses[jobId].kill('SIGTERM');
+      delete activeProcesses[jobId];
+    }
+    delete activeJobs[jobId];
+    res.json({ message: 'Job removed' });
+  } else {
+    res.status(404).json({ error: 'Job not found' });
+  }
+});
+
+app.post('/api/copy/restart', (req, res) => {
+  const { jobId } = req.body;
+  const job = activeJobs[jobId];
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (activeProcesses[jobId]) {
+    activeProcesses[jobId].kill('SIGTERM');
+    delete activeProcesses[jobId];
+  }
+
+  job.status = 'running';
+  job.progress = 'Starting...';
+  delete job.error;
+
+  startRcloneJob(jobId, job.source, job.destination, job.threads);
+
+  res.json({ jobId, message: 'Job restarted' });
 });
 
 app.get('/api/config', async (req, res) => {

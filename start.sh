@@ -83,7 +83,7 @@ cd ..
 trap "echo -e '\nShutting down both servers...'; kill $SERVER_PID; kill $FRONTEND_PID; exit 0" SIGINT SIGTERM
 
 echo "================================================="
-echo "rcloneCommander is running!"
+echo "rcCommander is running!"
 echo "Backend active at  -> http://localhost:3001"
 echo "Frontend active at -> http://localhost:5173"
 echo "Press Ctrl+C to stop both servers."

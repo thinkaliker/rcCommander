@@ -6,7 +6,7 @@ PUID=${PUID:-1000}
 PGID=${PGID:-1000}
 
 echo "----------------------------------------------------"
-echo "  Starting rcloneCommander with LS.io style IDs"
+echo "  Starting rcCommander with LS.io style IDs"
 echo "  User UID: $PUID"
 echo "  User GID: $PGID"
 echo "----------------------------------------------------"

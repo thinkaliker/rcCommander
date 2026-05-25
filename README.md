@@ -1,10 +1,10 @@
-# rcloneCommander
+# rcCommander
 
 DISCLAIMER: This is a work in progress and is not intended for production use. It is also entirely written by an AI and may contain bugs or security vulnerabilities.
 
 A sleek, dual-pane web interface wrapper built natively to manage your local file system and `rclone` configured remotes simultaneously. Built with a unified Glassmorphic aesthetic, Vite, React, and Node.js.
 
-![rcloneCommander Preview](frontend/public/favicon.png)
+![rcCommander Preview](frontend/public/favicon.png)
 
 ## Core Features
 *   **Dual-Pane Navigation:** Browse both local and `rclone` remotes seamlessly side-by-side natively.
@@ -16,7 +16,7 @@ A sleek, dual-pane web interface wrapper built natively to manage your local fil
 
 ## 🐋 Production Deployment (Docker Compose)
 
-The recommended way to deploy `rcloneCommander` on a home server or public facing domain proxy block is through the unified production container. 
+The recommended way to deploy `rcCommander` on a home server or public facing domain proxy block is through the unified production container. 
 
 Because the entire interface leverages Native NGINX routing architectures, it bundles natively down into a single exposed port binding!
 

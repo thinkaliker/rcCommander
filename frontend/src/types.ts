@@ -15,4 +15,5 @@ export interface CopyJob {
     status: 'running' | 'completed' | 'error';
     error?: string;
     threads: number;
+    autoRemoveSeconds?: number;
 }
