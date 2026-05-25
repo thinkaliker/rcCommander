@@ -21,9 +21,6 @@ if [ -d "/config" ]; then
     chown -R node:node /config
 fi
 
-# Chown the app directory so node can run the scripts
-chown -R node:node /app
-
 # Point RCLONE_CONFIG to the neutral path if not set, 
 # and ensure node user has a proper home for rclone to work
 export HOME=/home/node

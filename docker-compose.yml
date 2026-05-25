@@ -15,5 +15,5 @@ services:
       # Map your host system's rclone configuration file (read-only for safety)
       - ~/.config/rclone/rclone.conf:/config/rclone.conf:ro
       # Required: Map a specific host directory you want to copy files to/from
-      # - /path/on/your/host:/target:rw
+      # - /path/on/your/host:/mnt:rw
     restart: unless-stopped
