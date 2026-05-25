@@ -382,3 +382,13 @@ input[type="number"] {
   margin-right: 16px;
   min-width: 0;
 }
+
+@keyframes pulse {
+  0% { transform: scale(0.95); opacity: 0.6; }
+  50% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 6px var(--accent); }
+  100% { transform: scale(0.95); opacity: 0.6; }
+}
+
+.pulse-dot {
+  animation: pulse 2s infinite ease-in-out;
+}

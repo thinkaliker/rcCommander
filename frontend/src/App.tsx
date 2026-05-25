@@ -15,6 +15,81 @@ const getFileName = (pathStr: string) => {
   return parts.length > 0 ? parts[parts.length - 1] : '/';
 };
 
+// Parse speed string (e.g. "5.102 MiB/s") to raw bytes per second
+const parseSpeed = (speedStr: string | undefined): number => {
+  if (!speedStr) return 0;
+  const cleaned = speedStr.trim().toLowerCase();
+  const match = cleaned.match(/^([\d.]+)\s*([a-z/]+)$/i);
+  if (!match) return 0;
+  const val = parseFloat(match[1]);
+  const unit = match[2];
+  if (unit.startsWith('t')) return val * 1024 * 1024 * 1024 * 1024;
+  if (unit.startsWith('g')) return val * 1024 * 1024 * 1024;
+  if (unit.startsWith('m')) return val * 1024 * 1024;
+  if (unit.startsWith('k')) return val * 1024;
+  return val;
+};
+
+// Format speed from raw bytes per second
+const formatSpeed = (bytesPerSec: number): string => {
+  if (bytesPerSec === 0) return '0 B/s';
+  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s'];
+  let idx = 0;
+  let val = bytesPerSec;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx++;
+  }
+  return `${val.toFixed(2)} ${units[idx]}`;
+};
+
+// Parse elapsed time string (e.g. "12.3s", "1m2.3s") to raw seconds
+const parseElapsedTime = (timeStr: string | undefined): number => {
+  if (!timeStr) return 0;
+  const cleaned = timeStr.trim().toLowerCase();
+  const match = cleaned.replace(/\s+/g, '').match(/^(?:([\d.]+)h)?(?:([\d.]+)m)?(?:([\d.]+)s)?$/);
+  if (match) {
+    const h = match[1] ? parseFloat(match[1]) : 0;
+    const m = match[2] ? parseFloat(match[2]) : 0;
+    const s = match[3] ? parseFloat(match[3]) : 0;
+    return h * 3600 + m * 60 + s;
+  }
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+};
+
+// Format elapsed time from raw seconds
+const formatElapsedTime = (seconds: number): string => {
+  if (seconds < 0) return '0s';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  
+  let res = '';
+  if (h > 0) res += `${h}h`;
+  if (m > 0) res += `${m}m`;
+  if (h === 0 && m === 0) {
+    res += `${s.toFixed(1).replace(/\.0$/, '')}s`;
+  } else {
+    res += `${Math.round(s)}s`;
+  }
+  return res;
+};
+
+// Parse remaining time string (e.g. "3m56s") to seconds
+const parseETA = (etaStr: string | undefined): number | null => {
+  if (!etaStr || etaStr.trim() === '-') return null;
+  const cleaned = etaStr.trim().toLowerCase();
+  const match = cleaned.replace(/\s+/g, '').match(/^(?:([\d.]+)h)?(?:([\d.]+)m)?(?:([\d.]+)s)?$/);
+  if (match) {
+    const h = match[1] ? parseFloat(match[1]) : 0;
+    const m = match[2] ? parseFloat(match[2]) : 0;
+    const s = match[3] ? parseFloat(match[3]) : 0;
+    return h * 3600 + m * 60 + s;
+  }
+  return null;
+};
+
 function App() {
   const [remotes, setRemotes] = useState<string[]>([]);
 
@@ -343,6 +418,31 @@ function App() {
     }
   };
 
+  // Summed/aggregate stats calculation for active running jobs
+  const runningJobs = Object.values(activeJobs).filter(job => job.status === 'running');
+  
+  let totalSpeedBytes = 0;
+  let totalElapsedSeconds = 0;
+  let maxRemainingSeconds = 0;
+  let hasValidETA = false;
+  
+  runningJobs.forEach(job => {
+    totalSpeedBytes += parseSpeed(job.speed);
+    totalElapsedSeconds += parseElapsedTime(job.elapsedTime);
+    
+    const etaSec = parseETA(job.eta);
+    if (etaSec !== null) {
+      hasValidETA = true;
+      if (etaSec > maxRemainingSeconds) {
+        maxRemainingSeconds = etaSec;
+      }
+    }
+  });
+  
+  const totalSpeed = formatSpeed(totalSpeedBytes);
+  const totalElapsed = formatElapsedTime(totalElapsedSeconds);
+  const totalRemaining = hasValidETA ? formatElapsedTime(maxRemainingSeconds) : '-';
+
   return (
     <div className="app-container">
       <div className="header">
@@ -501,6 +601,30 @@ function App() {
             }}>Refresh Folders</button>
           </div>
 
+          {runningJobs.length > 1 && (
+            <div className="jobs-summary-card" style={{
+              background: 'rgba(102, 252, 241, 0.03)',
+              border: '1px solid rgba(102, 252, 241, 0.15)',
+              borderRadius: '8px',
+              padding: '10px 14px',
+              marginBottom: '10px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '0.8rem',
+            }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span className="pulse-dot" style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }}></span>
+                Aggregate Summary ({runningJobs.length} running)
+              </div>
+              <div style={{ display: 'flex', gap: '16px', color: '#aaa' }}>
+                <div>Total Speed: <strong style={{ color: '#fff' }}>{totalSpeed}</strong></div>
+                <div>Total Elapsed: <strong style={{ color: '#fff' }}>{totalElapsed}</strong></div>
+                <div>Remaining: <strong style={{ color: '#fff' }}>{totalRemaining}</strong></div>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {Object.values(activeJobs).map(job => (
               <div key={job.id} className="job-item" style={{ flexDirection: 'column', alignItems: 'stretch', minWidth: 0 }}>
@@ -517,6 +641,19 @@ function App() {
                     <div className="progress-bar-container">
                       <div className="progress-bar-fill" style={{ width: `${job.progress.match(/([0-9.]+)%/)?.[1] || (job.status === 'completed' ? 100 : 0)}%`, background: job.status === 'error' ? 'var(--danger)' : 'var(--accent)' }}></div>
                     </div>
+                    {(job.elapsedTime || job.speed || job.eta) && (
+                      <div style={{ display: 'flex', gap: '15px', fontSize: '0.75rem', color: '#8892b0', marginTop: '6px' }}>
+                        {job.elapsedTime && (
+                          <span>Elapsed: <span style={{ color: '#ccc' }}>{job.elapsedTime}</span></span>
+                        )}
+                        {job.status === 'running' && job.speed && (
+                          <span>Speed: <span style={{ color: '#ccc' }}>{job.speed}</span></span>
+                        )}
+                        {job.status === 'running' && job.eta && (
+                          <span>Remaining: <span style={{ color: '#ccc' }}>{job.eta}</span></span>
+                        )}
+                      </div>
+                    )}
                     {job.status === 'error' && job.error && (
                       <div style={{ fontSize: '0.75rem', color: 'var(--danger)', marginTop: '6px', padding: '4px 8px', background: 'rgba(255,0,0,0.1)', borderRadius: '4px', borderLeft: '2px solid var(--danger)', wordBreak: 'break-all' }}>
                         {job.error}

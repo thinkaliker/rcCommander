@@ -16,4 +16,7 @@ export interface CopyJob {
     error?: string;
     threads: number;
     autoRemoveSeconds?: number;
+    elapsedTime?: string;
+    speed?: string;
+    eta?: string;
 }

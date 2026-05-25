@@ -35,6 +35,9 @@ interface CopyJob {
   error?: string;
   threads: number;
   autoRemoveSeconds?: number;
+  elapsedTime?: string;
+  speed?: string;
+  eta?: string;
 }
 const activeJobs: Record<string, CopyJob> = {};
 const activeProcesses: Record<string, any> = {};
@@ -131,17 +134,35 @@ function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThr
             lastError = trimmed;
         }
       }
+
+      // Parse main stats line: Transferred: size / size, pct%, speed, ETA eta
+      const transMatch = trimmed.match(/Transferred:\s+([^,]+),\s*([^,]+),\s*([^,]+),\s*ETA\s+(.*)/);
+      if (transMatch) {
+        const pct = transMatch[2].trim();
+        activeJobs[jobId].progress = pct.endsWith('%') ? pct : (pct === '-' ? '-' : `${pct}%`);
+        activeJobs[jobId].speed = transMatch[3].trim();
+        activeJobs[jobId].eta = transMatch[4].trim();
+      }
+
+      // Parse elapsed time: Elapsed time: time
+      const elapsedMatch = trimmed.match(/Elapsed time:\s+(.*)/);
+      if (elapsedMatch) {
+        activeJobs[jobId].elapsedTime = elapsedMatch[1].trim();
+      }
     }
 
-    const match = output.match(/([0-9.]+)%/);
-    if (match) {
-      activeJobs[jobId].progress = `${parseFloat(match[1])}%`;
-    } else {
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (line.length > 0 && line.includes('Transferred:')) {
-          activeJobs[jobId].progress = line;
-          break;
+    // Fallback logic for progress if speed was not parsed yet (e.g. very early stage)
+    if (!activeJobs[jobId].speed) {
+      const match = output.match(/([0-9.]+)%/);
+      if (match) {
+        activeJobs[jobId].progress = `${parseFloat(match[1])}%`;
+      } else {
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (line.length > 0 && line.includes('Transferred:')) {
+            activeJobs[jobId].progress = line;
+            break;
+          }
         }
       }
     }
@@ -153,6 +174,8 @@ function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThr
   child.on('close', (code) => {
     if (!activeJobs[jobId]) return;
     activeJobs[jobId].status = code === 0 ? 'completed' : 'error';
+    activeJobs[jobId].speed = '0 B/s';
+    activeJobs[jobId].eta = '-';
     if (code === 0) {
       activeJobs[jobId].progress = '100%';
     } else {
@@ -196,6 +219,9 @@ app.post('/api/copy', (req, res) => {
     status: 'running',
     threads: numThreads,
     autoRemoveSeconds: autoRemoveSeconds !== undefined ? autoRemoveSeconds : 5,
+    elapsedTime: '0s',
+    speed: '0 B/s',
+    eta: '-',
   };
 
   startRcloneJob(jobId, srcPath, destPath, numThreads);
@@ -215,6 +241,8 @@ app.post('/api/copy/stop', (req, res) => {
     if (activeJobs[jobId]) {
       activeJobs[jobId].status = 'error';
       activeJobs[jobId].progress = 'Stopped by user';
+      activeJobs[jobId].speed = '0 B/s';
+      activeJobs[jobId].eta = '-';
     }
     res.json({ message: 'Job stopped' });
   } else {
@@ -250,6 +278,9 @@ app.post('/api/copy/restart', (req, res) => {
 
   job.status = 'running';
   job.progress = 'Starting...';
+  job.elapsedTime = '0s';
+  job.speed = '0 B/s';
+  job.eta = '-';
   delete job.error;
 
   startRcloneJob(jobId, job.source, job.destination, job.threads);
