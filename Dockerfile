@@ -6,7 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     unzip \
     fuse3 \
-    man-db \
     gosu \
     passwd \
     && apt-get clean \

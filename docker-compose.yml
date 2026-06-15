@@ -10,7 +10,31 @@ services:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
     ports:
-      - "3001:3001"
+      # Bind to loopback only. No auth on the API yet, so do NOT expose to the LAN.
+      # Put a TLS reverse-proxy + auth in front before changing to 0.0.0.0.
+      - "127.0.0.1:3001:3001"
+    # Runtime hardening
+    security_opt:
+      - no-new-privileges:true
+    # Entrypoint switches user (gosu) and chowns /config as root, so it needs a
+    # few caps. Drop everything else.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN          # chown -R /config
+      - DAC_OVERRIDE   # edit /etc/passwd, /etc/group
+      - FOWNER         # usermod/groupmod
+      - SETUID         # gosu drop to node
+      - SETGID         # gosu drop to node
+      - SETPCAP        # gosu drops its own caps after switch
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       # Map your host system's rclone configuration file (read-only for safety)
       - ~/.config/rclone/rclone.conf:/config/rclone.conf:ro

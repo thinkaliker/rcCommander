@@ -1,16 +1,61 @@
 import express from 'express';
 import cors from 'cors';
-import { exec, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 
 const app = express();
 const port = 3001;
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+// Local filesystem access is confined to this root to prevent path traversal.
+const LOCAL_ROOT = path.resolve(process.env.LOCAL_ROOT || '/mnt');
+
+function isLocal(p: string): boolean {
+  return p === 'Local Filesystem' || p.startsWith('Local Filesystem:');
+}
+
+// Resolve a "Local Filesystem[:subpath]" spec to a host path confined to
+// LOCAL_ROOT. Throws if the result escapes the root (../ traversal).
+function resolveLocalPath(p: string): string {
+  let rel = '';
+  if (p.startsWith('Local Filesystem:')) rel = p.slice('Local Filesystem:'.length);
+  rel = rel.replace(/^[/\\]+/, '');
+  const resolved = path.resolve(LOCAL_ROOT, rel);
+  if (resolved !== LOCAL_ROOT && !resolved.startsWith(LOCAL_ROOT + path.sep)) {
+    throw new Error('Path is outside the allowed local root');
+  }
+  return resolved;
+}
+
+// Map a user-supplied source/dest into a value safe to hand to rclone:
+// local specs are confined to LOCAL_ROOT, remotes pass through unchanged.
+function toRclonePath(p: string): string {
+  return isLocal(p) ? resolveLocalPath(p) : p;
+}
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50kb' }));
+
+// Simple in-memory rate limiter for the API (no external deps).
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 300;
+const rateHits = new Map<string, { count: number; reset: number }>();
+app.use('/api', (req, res, next) => {
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const entry = rateHits.get(key);
+  if (!entry || now > entry.reset) {
+    rateHits.set(key, { count: 1, reset: now + RATE_WINDOW_MS });
+    return next();
+  }
+  if (entry.count >= RATE_MAX) {
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  entry.count++;
+  next();
+});
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -21,7 +66,9 @@ app.use((req, res, next) => {
 // Endpoint for frontend log forwarding
 app.post('/api/log', (req, res) => {
   const { level, message, data } = req.body;
-  console.log(`[${new Date().toISOString()}] [FRONTEND] [${level?.toUpperCase() || 'LOG'}] ${message}`, data ? JSON.stringify(data) : '');
+  // Strip CR/LF and cap length to prevent log injection / forging.
+  const clean = (v: any) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, 1000);
+  console.log(`[${new Date().toISOString()}] [FRONTEND] [${clean(level).toUpperCase() || 'LOG'}] ${clean(message)}`, data ? clean(JSON.stringify(data)) : '');
   res.sendStatus(200);
 });
 
@@ -44,7 +91,7 @@ const activeProcesses: Record<string, any> = {};
 
 app.get('/api/remotes', async (req, res) => {
   try {
-    const { stdout } = await execAsync('rclone listremotes');
+    const { stdout } = await execFileAsync('rclone', ['listremotes']);
     const remotes = stdout.split('\n').map(r => r.trim()).filter(r => r.length > 0);
     // Include a local filesystem specifier
     res.json({ remotes: ['Local Filesystem', ...remotes] });
@@ -61,22 +108,9 @@ app.get('/api/files', async (req, res) => {
   }
 
   try {
-    // Determine actual path for rclone
-    // If it's "Local Filesystem", the root path will just be / (or drive letter on Windows)
-    let rclonePath = targetPath;
-    if (rclonePath === 'Local Filesystem' || rclonePath === 'Local Filesystem:') {
-      // Special case to list root for local system. On Mac/Linux, this is '/'
-      rclonePath = '/';
-    } else if (rclonePath.startsWith('Local Filesystem:')) {
-      rclonePath = rclonePath.replace('Local Filesystem:', '');
-    }
-
-    // Fallback default
-    if (rclonePath === '') {
-      rclonePath = '/';
-    }
-
-    const { stdout } = await execAsync(`rclone lsjson "${rclonePath}"`);
+    // Local paths are confined to LOCAL_ROOT; remotes pass through unchanged.
+    const rclonePath = toRclonePath(targetPath);
+    const { stdout } = await execFileAsync('rclone', ['lsjson', rclonePath]);
     const files = JSON.parse(stdout);
     res.json({ files });
   } catch (error: any) {
@@ -92,18 +126,23 @@ app.post('/api/mkdir', async (req, res) => {
     return res.status(400).json({ error: 'remote and folderName are required' });
   }
 
-  let targetPath = '';
-  if (remote === 'Local Filesystem') {
-    targetPath = pathParam ? path.join(pathParam, folderName) : `/${folderName}`;
-  } else {
-    targetPath = `${remote}:${pathParam ? pathParam + '/' : ''}${folderName}`;
+  // folderName must be a single path segment, no separators or traversal.
+  if (/[\\/]/.test(folderName) || folderName === '..' || folderName === '.') {
+    return res.status(400).json({ error: 'Invalid folderName' });
   }
 
   try {
-    await execAsync(`rclone mkdir "${targetPath}"`);
+    let targetPath: string;
+    if (remote === 'Local Filesystem') {
+      const sub = pathParam ? `${pathParam}/${folderName}` : folderName;
+      targetPath = resolveLocalPath(`Local Filesystem:${sub}`);
+    } else {
+      targetPath = `${remote}:${pathParam ? pathParam + '/' : ''}${folderName}`;
+    }
+    await execFileAsync('rclone', ['mkdir', targetPath]);
     res.json({ success: true, message: 'Folder created successfully' });
   } catch (error: any) {
-    console.error(`Error creating folder ${targetPath}:`, error);
+    console.error('Error creating folder:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -202,14 +241,14 @@ app.post('/api/copy', (req, res) => {
   const numThreads = threads || 4;
   const jobId = Date.now().toString(36) + '-' + Math.random().toString(36).substring(7);
 
-  const formatPath = (p: string) => {
-    if (p.startsWith('Local Filesystem:')) return p.replace('Local Filesystem:', '');
-    if (p === 'Local Filesystem') return '/';
-    return p;
-  };
-
-  const srcPath = formatPath(source);
-  const destPath = formatPath(destination);
+  let srcPath: string;
+  let destPath: string;
+  try {
+    srcPath = toRclonePath(source);
+    destPath = toRclonePath(destination);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
 
   activeJobs[jobId] = {
     id: jobId,
@@ -290,11 +329,16 @@ app.post('/api/copy/restart', (req, res) => {
 
 app.get('/api/config', async (req, res) => {
   try {
-    const { stdout: configFile } = await execAsync('rclone config file');
-    const { stdout: configDump } = await execAsync('rclone config dump || rclone config show');
+    const { stdout: configFile } = await execFileAsync('rclone', ['config', 'file']);
+    let dump = '';
+    try {
+      ({ stdout: dump } = await execFileAsync('rclone', ['config', 'dump']));
+    } catch {
+      ({ stdout: dump } = await execFileAsync('rclone', ['config', 'show']));
+    }
     res.json({
       path: configFile.trim(),
-      dump: configDump.trim()
+      dump: dump.trim()
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
