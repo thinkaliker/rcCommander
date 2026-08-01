@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import { execFile, spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
@@ -42,6 +44,13 @@ app.use(express.json({ limit: '50kb' }));
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 300;
 const rateHits = new Map<string, { count: number; reset: number }>();
+// Evict expired buckets periodically so the map cannot grow without bound.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateHits) {
+    if (now > entry.reset) rateHits.delete(key);
+  }
+}, RATE_WINDOW_MS).unref();
 app.use('/api', (req, res, next) => {
   const key = req.ip || 'unknown';
   const now = Date.now();
@@ -85,9 +94,31 @@ interface CopyJob {
   elapsedTime?: string;
   speed?: string;
   eta?: string;
+  // Incremented every time the job is (re)started. A spawned rclone process
+  // carries the runId it was started under; its stdout/close handlers are
+  // ignored once the job has moved on to a newer run. Without this a restart
+  // races the SIGTERM'd old process, whose late `close` would flip the fresh
+  // run straight back to 'error'.
+  runId: number;
 }
 const activeJobs: Record<string, CopyJob> = {};
-const activeProcesses: Record<string, any> = {};
+const activeProcesses: Record<string, { child: ChildProcess; runId: number }> = {};
+const removeTimers: Record<string, NodeJS.Timeout> = {};
+
+// Tear down any process/timer belonging to a job so a new run starts clean.
+function cancelRun(jobId: string) {
+  const timer = removeTimers[jobId];
+  if (timer) {
+    clearTimeout(timer);
+    delete removeTimers[jobId];
+  }
+  const entry = activeProcesses[jobId];
+  if (entry) {
+    delete activeProcesses[jobId];
+    entry.child.kill('SIGTERM');
+  }
+  return !!entry;
+}
 
 app.get('/api/remotes', async (req, res) => {
   try {
@@ -148,6 +179,10 @@ app.post('/api/mkdir', async (req, res) => {
 });
 
 function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThreads: number) {
+  const job = activeJobs[jobId];
+  if (!job) return;
+  const runId = job.runId;
+
   const child = spawn('rclone', [
     'copy',
     srcPath,
@@ -157,49 +192,56 @@ function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThr
     `--transfers=${numThreads}`
   ]);
 
-  activeProcesses[jobId] = child;
+  activeProcesses[jobId] = { child, runId };
+
+  // Returns the job only while this process is still the job's current run.
+  const currentJob = () => {
+    const j = activeJobs[jobId];
+    return j && j.runId === runId ? j : null;
+  };
 
   let lastError = '';
   const handleProgress = (data: any) => {
-    if (!activeJobs[jobId]) return;
+    if (!currentJob()) return;
     const output = data.toString();
+
+    const j = currentJob();
+    if (!j) return;
 
     // Capture potential error messages
     const lines = output.split('\n');
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.includes('ERROR :') || trimmed.includes('Failed to') || (trimmed.length > 0 && !trimmed.match(/[0-9.]%/))) {
-        if (trimmed.includes('ERROR :') || trimmed.includes('Failed to')) {
-            lastError = trimmed;
-        }
+      if (trimmed.includes('ERROR :') || trimmed.includes('Failed to')) {
+        lastError = trimmed;
       }
 
       // Parse main stats line: Transferred: size / size, pct%, speed, ETA eta
       const transMatch = trimmed.match(/Transferred:\s+([^,]+),\s*([^,]+),\s*([^,]+),\s*ETA\s+(.*)/);
       if (transMatch) {
         const pct = transMatch[2].trim();
-        activeJobs[jobId].progress = pct.endsWith('%') ? pct : (pct === '-' ? '-' : `${pct}%`);
-        activeJobs[jobId].speed = transMatch[3].trim();
-        activeJobs[jobId].eta = transMatch[4].trim();
+        j.progress = pct.endsWith('%') ? pct : (pct === '-' ? '-' : `${pct}%`);
+        j.speed = transMatch[3].trim();
+        j.eta = transMatch[4].trim();
       }
 
       // Parse elapsed time: Elapsed time: time
       const elapsedMatch = trimmed.match(/Elapsed time:\s+(.*)/);
       if (elapsedMatch) {
-        activeJobs[jobId].elapsedTime = elapsedMatch[1].trim();
+        j.elapsedTime = elapsedMatch[1].trim();
       }
     }
 
     // Fallback logic for progress if speed was not parsed yet (e.g. very early stage)
-    if (!activeJobs[jobId].speed) {
+    if (!j.speed) {
       const match = output.match(/([0-9.]+)%/);
       if (match) {
-        activeJobs[jobId].progress = `${parseFloat(match[1])}%`;
+        j.progress = `${parseFloat(match[1])}%`;
       } else {
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i].trim();
           if (line.length > 0 && line.includes('Transferred:')) {
-            activeJobs[jobId].progress = line;
+            j.progress = line;
             break;
           }
         }
@@ -211,22 +253,29 @@ function startRcloneJob(jobId: string, srcPath: string, destPath: string, numThr
   child.stderr.on('data', handleProgress);
 
   child.on('close', (code) => {
-    if (!activeJobs[jobId]) return;
-    activeJobs[jobId].status = code === 0 ? 'completed' : 'error';
-    activeJobs[jobId].speed = '0 B/s';
-    activeJobs[jobId].eta = '-';
-    if (code === 0) {
-      activeJobs[jobId].progress = '100%';
-    } else {
-      activeJobs[jobId].error = lastError || `Exited with code ${code}`;
-    }
+    // Drop this run's process handle, but only if it is still the registered
+    // one — a restart may already have installed a newer child.
+    if (activeProcesses[jobId]?.runId === runId) delete activeProcesses[jobId];
 
-    const delay = activeJobs[jobId].autoRemoveSeconds;
-    // Only auto-remove if completed successfully, not if error!
-    if (activeJobs[jobId].status === 'completed' && delay && delay > 0) {
-      setTimeout(() => {
-        delete activeJobs[jobId];
-      }, delay * 1000);
+    const j = currentJob();
+    if (!j) return;
+
+    j.status = code === 0 ? 'completed' : 'error';
+    j.speed = '0 B/s';
+    j.eta = '-';
+    if (code === 0) {
+      j.progress = '100%';
+      // Only auto-remove if completed successfully, not if error!
+      const delay = j.autoRemoveSeconds;
+      if (delay && delay > 0) {
+        removeTimers[jobId] = setTimeout(() => {
+          delete removeTimers[jobId];
+          // Re-check: the job may have been restarted while the timer ran.
+          if (activeJobs[jobId]?.runId === runId) delete activeJobs[jobId];
+        }, delay * 1000);
+      }
+    } else {
+      j.error = lastError || `Exited with code ${code}`;
     }
   });
 }
@@ -239,7 +288,7 @@ app.post('/api/copy', (req, res) => {
   }
 
   const numThreads = threads || 4;
-  const jobId = Date.now().toString(36) + '-' + Math.random().toString(36).substring(7);
+  const jobId = randomUUID();
 
   let srcPath: string;
   let destPath: string;
@@ -261,6 +310,7 @@ app.post('/api/copy', (req, res) => {
     elapsedTime: '0s',
     speed: '0 B/s',
     eta: '-',
+    runId: 1,
   };
 
   startRcloneJob(jobId, srcPath, destPath, numThreads);
@@ -274,28 +324,33 @@ app.get('/api/copy/status', (req, res) => {
 
 app.post('/api/copy/stop', (req, res) => {
   const { jobId } = req.body;
-  if (activeProcesses[jobId]) {
-    activeProcesses[jobId].kill('SIGTERM');
-    delete activeProcesses[jobId];
-    if (activeJobs[jobId]) {
-      activeJobs[jobId].status = 'error';
-      activeJobs[jobId].progress = 'Stopped by user';
-      activeJobs[jobId].speed = '0 B/s';
-      activeJobs[jobId].eta = '-';
-    }
-    res.json({ message: 'Job stopped' });
-  } else {
-    res.status(404).json({ error: 'Job not found' });
+  const job = activeJobs[jobId];
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
   }
+  // The client polls once a second, so its "running" view can be stale. Only
+  // a genuinely running job may be stopped — otherwise a late click would
+  // flip an already-finished job to 'error'.
+  if (job.status !== 'running') {
+    return res.json({ message: `Job already ${job.status}` });
+  }
+
+  // Retire this run before killing, so the dying process's `close` cannot
+  // overwrite the "Stopped by user" state we set below.
+  job.runId++;
+  cancelRun(jobId);
+  job.status = 'error';
+  job.progress = 'Stopped by user';
+  job.speed = '0 B/s';
+  job.eta = '-';
+  res.json({ message: 'Job stopped' });
 });
 
 app.post('/api/copy/remove', (req, res) => {
   const { jobId } = req.body;
   if (activeJobs[jobId]) {
-    if (activeProcesses[jobId]) {
-      activeProcesses[jobId].kill('SIGTERM');
-      delete activeProcesses[jobId];
-    }
+    activeJobs[jobId].runId++;
+    cancelRun(jobId);
     delete activeJobs[jobId];
     res.json({ message: 'Job removed' });
   } else {
@@ -310,10 +365,10 @@ app.post('/api/copy/restart', (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  if (activeProcesses[jobId]) {
-    activeProcesses[jobId].kill('SIGTERM');
-    delete activeProcesses[jobId];
-  }
+  // Retire the previous run first: SIGTERM is asynchronous, so the old child
+  // is still alive and emitting when the new one spawns.
+  job.runId++;
+  cancelRun(jobId);
 
   job.status = 'running';
   job.progress = 'Starting...';

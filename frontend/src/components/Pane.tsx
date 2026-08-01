@@ -1,227 +1,182 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { formatBytes } from '../format';
+import type { PaneState } from '../usePane';
 import type { RcloneFile } from '../types';
 
-interface PaneProps {
-    remotes: string[];
-    activeRemote: string;
-    activePath: string;
-    setActiveRemote: (val: string) => void;
-    setActivePath: (val: string) => void;
-    files: RcloneFile[];
-    selectedFiles: Set<string>;
-    toggleFile: (fileName: string) => void;
-    toggleAll?: (fileNames: string[], selectAll: boolean) => void;
-    isLoading: boolean;
-    onDropFile?: (source: any, dest: any) => void;
-    onRefresh: () => void;
-    onNewFolder?: () => void;
-    autoRefreshVal: number;
-    setAutoRefreshVal: (val: number) => void;
+export interface DragPayload {
+  sourceRemote: string;
+  sourcePath: string;
+  fileName: string;
+  isDir: boolean;
 }
 
-export const Pane: React.FC<PaneProps> = ({
-    remotes,
-    activeRemote,
-    activePath,
-    setActiveRemote,
-    setActivePath,
-    files,
-    selectedFiles,
-    toggleFile,
-    toggleAll,
-    isLoading,
-    onDropFile,
-    onRefresh,
-    onNewFolder,
-    autoRefreshVal,
-    setAutoRefreshVal
-}) => {
-    const formatBytes = (bytes: number) => {
-        if (!bytes || bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    };
+export interface DropTarget {
+  destRemote: string;
+  destPath: string;
+}
 
-    const [pathInput, setPathInput] = useState(activePath);
-    const [isDragOver, setIsDragOver] = useState(false);
+interface PaneProps {
+  pane: PaneState;
+  remotes: string[];
+  onDropFile: (source: DragPayload, dest: DropTarget) => void;
+  onNewFolder: () => void;
+}
 
-    useEffect(() => {
-        setPathInput(activePath);
-    }, [activePath]);
+const joinPath = (base: string, name: string) => {
+  if (base === '' || base === '/') return base === '/' ? `/${name}` : name;
+  return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`;
+};
 
-    const handlePathSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === 'Enter') {
-            setActivePath(pathInput);
-        }
-    };
+export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFolder }) => {
+  const [pathInput, setPathInput] = useState(pane.path);
+  const [syncedPath, setSyncedPath] = useState(pane.path);
+  const [isDragOver, setIsDragOver] = useState(false);
 
-    const handleNavigate = (file: RcloneFile) => {
-        if (!file.IsDir) return;
-        let newPath = '';
-        if (activeRemote === 'Local Filesystem') {
-            const base = activePath || '/';
-            newPath = base.endsWith('/') ? `${base}${file.Name}` : `${base}/${file.Name}`;
-        } else {
-            if (activePath === '' || activePath === '/') {
-                newPath = file.Name;
-            } else if (activePath.endsWith('/')) {
-                newPath = `${activePath}${file.Name}`;
-            } else {
-                newPath = `${activePath}/${file.Name}`;
-            }
-        }
-        setActivePath(newPath);
-    };
+  // Reset the draft during render (not in an effect) when navigation changes
+  // the pane's path, so the box never paints a stale value for a frame.
+  if (syncedPath !== pane.path) {
+    setSyncedPath(pane.path);
+    setPathInput(pane.path);
+  }
 
-    const goUpdir = () => {
-        if (activePath === '' || activePath === '/') return;
-        const parts = activePath.split('/');
-        parts.pop();
-        let newPath = parts.join('/');
-        if (activeRemote === 'Local Filesystem' && newPath === '') {
-            newPath = '/';
-        }
-        setActivePath(newPath);
-    };
+  const navigate = (file: RcloneFile) => {
+    if (file.IsDir) pane.setPath(joinPath(pane.path, file.Name));
+  };
 
-    const handleDragStart = (e: React.DragEvent, file: RcloneFile) => {
-        e.dataTransfer.setData('application/json', JSON.stringify({
-            sourceRemote: activeRemote,
-            sourcePath: activePath,
-            fileName: file.Name,
-            isDir: file.IsDir
-        }));
-    };
+  const goUp = () => {
+    if (pane.path === '' || pane.path === '/') return;
+    const parts = pane.path.split('/');
+    parts.pop();
+    const next = parts.join('/');
+    pane.setPath(pane.remote === 'Local Filesystem' && next === '' ? '/' : next);
+  };
 
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setIsDragOver(false);
-        const dataStr = e.dataTransfer.getData('application/json');
-        if (dataStr) {
-            const data = JSON.parse(dataStr);
-            if (data.sourceRemote !== activeRemote || data.sourcePath !== activePath) {
-                if (onDropFile) {
-                    onDropFile(data, { destRemote: activeRemote, destPath: activePath });
-                }
-            }
-        }
-    };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const raw = e.dataTransfer.getData('application/json');
+    if (!raw) return;
+    try {
+      const data: DragPayload = JSON.parse(raw);
+      if (data.sourceRemote === pane.remote && data.sourcePath === pane.path) return;
+      onDropFile(data, { destRemote: pane.remote, destPath: pane.path });
+    } catch {
+      /* not one of our drags */
+    }
+  };
 
-    return (
-        <div
-            className="pane"
-            style={{ border: isDragOver ? '2px dashed var(--accent)' : '' }}
-            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-            onDragLeave={() => setIsDragOver(false)}
-            onDrop={handleDrop}
+  const atRoot = pane.path === '' || pane.path === '/';
+  const allSelected = pane.files.length > 0 && pane.files.every(f => pane.selected.has(f.Name));
+
+  return (
+    <section
+      className={`pane${isDragOver ? ' is-drop-target' : ''}`}
+      onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
+      onDragLeave={() => setIsDragOver(false)}
+      onDrop={handleDrop}
+    >
+      <div className="pane-header">
+        <select
+          className="select"
+          aria-label="Remote"
+          value={pane.remote}
+          onChange={e => pane.setRemote(e.target.value)}
         >
-            <div className="pane-header">
-                <select
-                    className="remotes-dropdown"
-                    value={activeRemote}
-                    onChange={(e) => setActiveRemote(e.target.value)}
-                >
-                    {remotes.map(remote => (
-                        <option key={remote} value={remote}>{remote}</option>
-                    ))}
-                </select>
-                <input
-                    className="path-input"
-                    value={pathInput}
-                    onChange={(e) => setPathInput(e.target.value)}
-                    onKeyDown={handlePathSubmit}
-                    placeholder="Path..."
-                />
-            </div>
+          {remotes.map(remote => (
+            <option key={remote} value={remote}>{remote}</option>
+          ))}
+        </select>
+        <input
+          className="input"
+          aria-label="Path"
+          value={pathInput}
+          placeholder="Path…"
+          onChange={e => setPathInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') pane.setPath(pathInput); }}
+        />
+      </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px 8px', fontSize: '0.85rem', color: '#ccc' }}>
-                <div style={{ display: 'flex', gap: '15px' }}>
-                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={onRefresh}>⟳ Refresh</span>
-                    {onNewFolder && (
-                        <span style={{ cursor: 'pointer', textDecoration: 'underline', color: 'var(--accent)' }} onClick={onNewFolder}>+ New Folder</span>
-                    )}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <label>Auto-refresh (s):</label>
-                    <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--glass-border)', borderRadius: '4px', overflow: 'hidden' }}>
-                        <button
-                            style={{ background: 'transparent', border: 'none', color: '#fff', padding: '2px 8px', cursor: 'pointer', borderRight: '1px solid var(--glass-border)' }}
-                            onClick={() => setAutoRefreshVal(Math.max(0, autoRefreshVal - 1))}
-                        >-</button>
-                        <input
-                            type="number"
-                            min="0"
-                            style={{ width: '30px', background: 'transparent', border: 'none', color: '#fff', padding: '2px 0', fontSize: '0.8rem', textAlign: 'center', outline: 'none' }}
-                            value={autoRefreshVal}
-                            onChange={(e) => setAutoRefreshVal(parseInt(e.target.value) || 0)}
-                        />
-                        <button
-                            style={{ background: 'transparent', border: 'none', color: '#fff', padding: '2px 8px', cursor: 'pointer', borderLeft: '1px solid var(--glass-border)' }}
-                            onClick={() => setAutoRefreshVal(autoRefreshVal + 1)}
-                        >+</button>
-                    </div>
-                </div>
-            </div>
-
-            <div className="file-list-container">
-                {isLoading ? (
-                    <div style={{ padding: 20, textAlign: 'center', color: '#888' }}>Loading...</div>
-                ) : (
-                    <div>
-                        <div className="file-item select-all-row" style={{ background: 'rgba(255,255,255,0.05)', borderBottom: '1px solid var(--glass-border)' }}>
-                            <input
-                                type="checkbox"
-                                className="file-checkbox"
-                                checked={files.length > 0 && files.every(f => selectedFiles.has(f.Name))}
-                                onChange={(e) => {
-                                    if (toggleAll) toggleAll(files.map(f => f.Name), e.target.checked);
-                                }}
-                            />
-                            <div className="file-name" style={{ marginLeft: '10px', fontWeight: 'bold' }}>Select All ({files.length} items)</div>
-                        </div>
-
-                        {(activePath !== '' && activePath !== '/') && (
-                            <div className="file-item" onClick={goUpdir} onDrop={handleDrop}>
-                                <div className="file-icon">📁</div>
-                                <div className="file-name">..</div>
-                            </div>
-                        )}
-                        {files.map(file => {
-                            const isSelected = selectedFiles.has(file.Name);
-
-                            return (
-                                <div
-                                    key={file.Name}
-                                    className={`file-item ${isSelected ? 'selected' : ''}`}
-                                    draggable
-                                    onDragStart={(e) => handleDragStart(e, file)}
-                                    onClick={(e) => {
-                                        if ((e.target as HTMLElement).tagName !== 'INPUT') {
-                                            if (file.IsDir) {
-                                                handleNavigate(file);
-                                            } else {
-                                                toggleFile(file.Name);
-                                            }
-                                        }
-                                    }}
-                                >
-                                    <input
-                                        type="checkbox"
-                                        className="file-checkbox"
-                                        checked={isSelected}
-                                        onChange={() => toggleFile(file.Name)}
-                                    />
-                                    <div className="file-icon">{file.IsDir ? '📁' : '📄'}</div>
-                                    <div className="file-name" title={file.Name}>{file.Name}</div>
-                                    {!file.IsDir && <div className="file-size">{formatBytes(file.Size)}</div>}
-                                </div>
-                            )
-                        })}
-                    </div>
-                )}
-            </div>
+      <div className="pane-toolbar">
+        <div className="pane-toolbar-actions">
+          <button className="btn-link" onClick={() => pane.refresh(true)}>⟳ Refresh</button>
+          <button className="btn-link is-accent" onClick={onNewFolder}>+ New Folder</button>
         </div>
-    );
+        <div className="stepper-label">
+          <label htmlFor={`auto-${pane.remote}`}>Auto-refresh (s)</label>
+          <div className="stepper">
+            <button aria-label="Decrease" onClick={() => pane.setAutoRefresh(Math.max(0, pane.autoRefresh - 1))}>−</button>
+            <input
+              id={`auto-${pane.remote}`}
+              type="number"
+              min="0"
+              value={pane.autoRefresh}
+              onChange={e => pane.setAutoRefresh(Math.max(0, parseInt(e.target.value) || 0))}
+            />
+            <button aria-label="Increase" onClick={() => pane.setAutoRefresh(pane.autoRefresh + 1)}>+</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="file-list">
+        {pane.loading && pane.files.length === 0 ? (
+          <div className="pane-empty">Loading…</div>
+        ) : (
+          <>
+            <div className="file-row is-header">
+              <input
+                type="checkbox"
+                className="checkbox"
+                aria-label="Select all"
+                checked={allSelected}
+                onChange={e => pane.toggleAll(pane.files.map(f => f.Name), e.target.checked)}
+              />
+              <span className="file-name">
+                Select all · {pane.files.length} item{pane.files.length === 1 ? '' : 's'}
+              </span>
+            </div>
+
+            {!atRoot && (
+              <div className="file-row" onClick={goUp} onDrop={handleDrop}>
+                <span className="checkbox" style={{ visibility: 'hidden' }} />
+                <span className="file-icon">📁</span>
+                <span className="file-name">..</span>
+              </div>
+            )}
+
+            {pane.files.map(file => (
+              <div
+                key={file.Name}
+                className={`file-row${pane.selected.has(file.Name) ? ' is-selected' : ''}`}
+                draggable
+                onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify({
+                  sourceRemote: pane.remote,
+                  sourcePath: pane.path,
+                  fileName: file.Name,
+                  isDir: file.IsDir,
+                }))}
+                onClick={e => {
+                  if ((e.target as HTMLElement).tagName === 'INPUT') return;
+                  if (file.IsDir) navigate(file);
+                  else pane.toggleFile(file.Name);
+                }}
+              >
+                <input
+                  type="checkbox"
+                  className="checkbox"
+                  aria-label={`Select ${file.Name}`}
+                  checked={pane.selected.has(file.Name)}
+                  onChange={() => pane.toggleFile(file.Name)}
+                />
+                <span className="file-icon">{file.IsDir ? '📁' : '📄'}</span>
+                <span className="file-name" title={file.Name}>{file.Name}</span>
+                {!file.IsDir && <span className="file-size">{formatBytes(file.Size)}</span>}
+              </div>
+            ))}
+
+            {pane.files.length === 0 && <div className="pane-empty">This folder is empty.</div>}
+          </>
+        )}
+      </div>
+    </section>
+  );
 };
