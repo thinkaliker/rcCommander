@@ -1,3 +1,8 @@
+/* ============================================================
+   rcCommander — component styles.
+   Tokens, reset and theming live in index.css.
+   ============================================================ */
+
 /* ---------- Layout shell ---------- */
 
 .app {
@@ -14,8 +19,26 @@
   .app {
     height: auto;
     min-height: 100dvh;
+    gap: 12px;
     padding: 12px;
   }
+}
+
+/* ---------- Panels ---------- */
+
+/* One card treatment shared by every top-level region, so the header, both
+   panes, the transfer column and the jobs list all read as separate surfaces
+   floating over the background rather than one undivided page. */
+.app-header,
+.pane,
+.transfer-controls,
+.jobs-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 /* ---------- Header ---------- */
@@ -26,53 +49,107 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 0 4px;
+  padding: 10px 14px;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
   min-width: 0;
 }
 
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: var(--accent-fg);
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  box-shadow: 0 6px 18px -6px var(--accent-ring);
+}
+
 .brand h1 {
-  font-size: clamp(1.25rem, 1rem + 1.2vw, 1.7rem);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--text-strong);
+  font-size: clamp(1.2rem, 1rem + 1vw, 1.6rem);
   white-space: nowrap;
 }
 
 .brand h1 span {
-  color: var(--accent);
+  /* Second half of the wordmark picks up the accent gradient. */
+  background: linear-gradient(100deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
   background: var(--surface-2);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
   white-space: nowrap;
-  color: var(--accent);
+  color: var(--success);
 }
 
 .status-pill.is-offline {
   color: var(--danger);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Theme switch ---------- */
+
+.theme-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+
+.theme-switch-btn {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.theme-switch-btn:hover {
+  color: var(--text-strong);
+}
+
+.theme-switch-btn.is-active {
+  background: var(--surface-solid);
+  color: var(--accent);
+  box-shadow: var(--shadow);
+}
+
 .status-pill::before {
   content: '';
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 8px currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
 }
 
 /* ---------- Workspace ---------- */
@@ -96,21 +173,56 @@
   }
 }
 
+/* ---------- Transfer controls ---------- */
+
 .transfer-controls {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
+  padding: 10px;
+}
+
+/* Round icon buttons read as a direction control rather than two more
+   toolbar buttons competing with everything else on the page. */
+.btn-round {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  /* Lighter than the surrounding panel so the control stays legible. */
+  background: var(--surface-3);
+  color: var(--text-strong);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease,
+              color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.btn-round:hover:not(:disabled) {
+  color: var(--accent-fg);
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  box-shadow: 0 8px 22px -8px var(--accent-ring);
+  transform: scale(1.06);
+}
+
+.btn-round:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-round:disabled {
+  color: var(--text-dim);
+  border-color: var(--border);
+  background: var(--surface-2);
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 @media (max-width: 900px) {
   .transfer-controls {
     flex-direction: row;
-    justify-content: center;
-  }
-
-  .transfer-controls .btn {
-    flex: 1;
     justify-content: center;
   }
 }
@@ -123,22 +235,16 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .pane:focus-within {
-  border-color: rgba(102, 252, 241, 0.35);
+  border-color: var(--border-strong);
 }
 
 .pane.is-drop-target {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow);
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 32px -8px var(--accent-ring);
 }
 
 .pane-header {
@@ -156,15 +262,22 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px 14px;
-  padding: 8px 12px;
+  padding: 7px 12px;
   font-size: 0.8rem;
   border-bottom: 1px solid var(--border);
 }
 
 .pane-toolbar-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
+}
+
+.pane-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.86rem;
 }
 
 /* ---------- Form controls ---------- */
@@ -172,18 +285,28 @@
 .select,
 .input {
   min-width: 0;
-  padding: 8px 10px;
+  padding: 8px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-3);
   color: var(--text-strong);
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   outline: none;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .select {
   flex: 0 1 170px;
+  cursor: pointer;
+  /* Custom chevron; `appearance: none` also drops the OS control chrome that
+     ignores our border radius. */
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
 }
 
 .input {
@@ -193,33 +316,44 @@
 .select:focus,
 .input:focus {
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .select option {
-  background: var(--bg);
+  background: var(--surface-solid);
   color: var(--text-strong);
 }
+
+.checkbox {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---------- Buttons ---------- */
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 10px 20px;
+  gap: 7px;
+  padding: 9px 18px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: #06222a;
-  font-size: 0.9rem;
+  color: var(--accent-fg);
+  font-size: 0.87rem;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, transform 0.1s ease,
+              border-color 0.15s ease, color 0.15s ease;
 }
 
 .btn:hover:not(:disabled) {
-  background: #85fdf5;
+  background: var(--accent-hover);
 }
 
 .btn:active:not(:disabled) {
@@ -227,93 +361,114 @@
 }
 
 .btn:disabled {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--surface-3);
   color: var(--text-dim);
   cursor: not-allowed;
 }
 
 .btn-sm {
   padding: 6px 12px;
-  font-size: 0.8rem;
+  font-size: 0.79rem;
+  border-radius: 7px;
 }
 
 .btn-ghost {
   background: transparent;
-  border-color: var(--border-strong);
-  color: var(--text);
+  border-color: var(--border);
+  color: var(--text-strong);
+  font-weight: 500;
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .btn-danger {
-  background: var(--danger);
-  color: #2a0808;
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #ff7a7a;
+  background: var(--danger);
+  color: var(--accent-fg);
 }
 
+/* Compact text-plus-icon action used inside pane toolbars. */
 .btn-link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--text);
-  font-size: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.79rem;
   font-weight: 500;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .btn-link:hover {
-  color: var(--accent);
+  background: var(--surface-3);
+  color: var(--text-strong);
 }
 
 .btn-link.is-accent {
   color: var(--accent);
 }
 
-/* Compact numeric stepper (auto-refresh interval). */
-.stepper {
-  display: inline-flex;
+.btn-link.is-accent:hover {
+  background: var(--accent-soft);
+}
+
+/* ---------- Stepper ---------- */
+
+.stepper-label {
+  display: flex;
   align-items: center;
-  overflow: hidden;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  border-radius: 7px;
+  background: var(--surface-3);
+  overflow: hidden;
 }
 
 .stepper button {
-  padding: 3px 9px;
-  border: none;
-  background: transparent;
-  color: var(--text-strong);
-  line-height: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-dim);
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .stepper button:hover {
-  background: var(--hover);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .stepper input {
   width: 34px;
-  padding: 3px 0;
   border: none;
   border-inline: 1px solid var(--border);
   background: transparent;
   color: var(--text-strong);
-  font-size: 0.8rem;
   text-align: center;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 0;
   outline: none;
-}
-
-.stepper-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-dim);
 }
 
 /* ---------- File list ---------- */
@@ -322,47 +477,22 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  overflow-x: hidden;
   overscroll-behavior: contain;
-}
-
-.file-list::-webkit-scrollbar,
-.jobs-panel::-webkit-scrollbar {
-  width: 8px;
-}
-
-.file-list::-webkit-scrollbar-thumb,
-.jobs-panel::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.16);
-  border-radius: 8px;
-}
-
-.file-list::-webkit-scrollbar-thumb:hover,
-.jobs-panel::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-dark);
 }
 
 .file-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-  background: none;
-  text-align: left;
+  padding: 7px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }
 
 .file-row:hover {
-  background: var(--hover);
-}
-
-.file-row.is-selected {
-  background: var(--accent-soft);
+  background: var(--surface-3);
 }
 
 .file-row.is-header {
@@ -370,44 +500,32 @@
   top: 0;
   z-index: 1;
   cursor: default;
-  background: #14181f;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.8rem;
+  background: var(--surface-solid);
+  border-bottom-color: var(--border);
   color: var(--text-dim);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
-.checkbox {
-  appearance: none;
-  flex: none;
-  width: 17px;
-  height: 17px;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 4px;
-  cursor: pointer;
-  position: relative;
-  transition: background 0.15s ease, border-color 0.15s ease;
+.file-row.is-header:hover {
+  background: var(--surface-solid);
 }
 
-.checkbox:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.checkbox:checked::after {
-  content: '✓';
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: #06222a;
-  font-size: 12px;
-  font-weight: 700;
+.file-row.is-selected {
+  /* Inset bar rather than a real border, so rows never shift by 2px. */
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .file-icon {
-  flex: none;
-  width: 20px;
-  text-align: center;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+}
+
+.file-row.is-dir .file-icon {
+  color: var(--accent);
 }
 
 .file-name {
@@ -416,20 +534,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 0.87rem;
+  color: var(--text-strong);
+}
+
+.file-row.is-header .file-name {
+  font-size: inherit;
+  color: inherit;
 }
 
 .file-size {
   flex: none;
-  font-size: 0.8rem;
   color: var(--text-dim);
+  font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
-}
-
-.pane-empty {
-  padding: 28px 16px;
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 0.9rem;
 }
 
 /* ---------- Jobs panel ---------- */
@@ -438,31 +556,21 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  flex: none;
-  max-height: min(280px, 40dvh);
-  padding: 14px 16px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  /* Capped so a long queue never pushes the panes off screen. */
+  max-height: min(300px, 42dvh);
+  padding: 12px 14px;
 }
 
 .jobs-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   flex-wrap: wrap;
-  gap: 8px;
 }
 
 .jobs-panel-header h2 {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-strong);
+  font-size: 0.95rem;
 }
 
 .jobs-summary {
@@ -471,19 +579,19 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 6px 16px;
-  padding: 9px 12px;
-  border: 1px solid rgba(102, 252, 241, 0.18);
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(102, 252, 241, 0.04);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   font-size: 0.78rem;
 }
 
 .jobs-summary-title {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-weight: 600;
+  gap: 8px;
   color: var(--accent);
+  font-weight: 600;
 }
 
 .jobs-summary-stats {
@@ -493,57 +601,74 @@
   color: var(--text-dim);
 }
 
-.jobs-summary-stats strong {
+.jobs-summary-stats strong,
+.job-stats strong {
   color: var(--text-strong);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+  50% { opacity: 0.5; box-shadow: 0 0 0 4px transparent; }
 }
 
 .jobs-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
-/* Info column is min-width:0 so long remote paths shrink and ellipsise
-   instead of pushing the progress bar past the panel edge. */
 .job {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
+  gap: 14px;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
 
+.job.is-error {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+}
+
+/* `min-width: 0` is what actually lets the long paths inside truncate
+   rather than stretching the row past the panel edge. */
 .job-info {
   flex: 1;
   min-width: 0;
-}
-
-.job-actions {
   display: flex;
-  flex: none;
+  flex-direction: column;
   gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .job-title {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  margin-bottom: 6px;
-  font-size: 0.85rem;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.83rem;
 }
 
 .job-route {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
+  color: var(--text-strong);
+  font-weight: 500;
 }
 
 .job-progress-text {
@@ -553,67 +678,81 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-dim);
+  font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
 }
 
-.job.is-error .job-progress-text {
-  color: var(--danger);
-}
-
 .progress-track {
-  width: 100%;
+  position: relative;
   height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
   overflow: hidden;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
 }
 
 .progress-fill {
+  position: relative;
   height: 100%;
+  /* Belt and braces with the clamp in progressPercent(): a bad server value
+     can never paint past the track. */
   max-width: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent-dark), var(--accent));
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
   transition: width 0.3s ease;
+  /* Clips the sweeping highlight below to the filled portion only. */
+  overflow: hidden;
+}
+
+.job.is-running .progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
 }
 
 .job.is-error .progress-fill {
   background: var(--danger);
 }
 
+.job.is-completed .progress-fill {
+  background: var(--success);
+}
+
 .job-stats {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
-  margin-top: 6px;
-  font-size: 0.74rem;
   color: var(--text-dim);
-}
-
-.job-stats strong {
-  color: var(--text);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+  font-size: 0.74rem;
 }
 
 .job-error {
-  margin-top: 6px;
-  padding: 5px 8px;
-  border-left: 2px solid var(--danger);
-  border-radius: 4px;
-  background: var(--danger-soft);
   color: var(--danger);
-  font-size: 0.74rem;
-  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+  word-break: break-word;
+}
+
+.job-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
 }
 
 @media (max-width: 600px) {
   .job {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
   }
 
   .job-actions {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 }
 
@@ -622,40 +761,51 @@
 .overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 50;
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  background: var(--overlay-bg);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: fade-in 0.15s ease;
 }
 
 .modal {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   width: min(440px, 100%);
-  max-height: 90dvh;
+  max-height: 88dvh;
   overflow-y: auto;
-  padding: 24px;
+  padding: 22px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: #11141a;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 
 .modal.is-wide {
-  width: min(640px, 100%);
+  width: min(760px, 100%);
 }
 
 .modal h2 {
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: var(--text-strong);
+  font-size: 1.1rem;
 }
 
 .modal p {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
 .field {
@@ -665,50 +815,34 @@
 }
 
 .field label {
-  font-size: 0.82rem;
   color: var(--text-dim);
+  font-size: 0.76rem;
+  font-weight: 500;
 }
 
-.field .input {
-  flex: none;
-  width: 100%;
+.config-dump {
+  min-height: 220px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
 }
 
 .modal-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
-.config-dump {
-  width: 100%;
-  height: 200px;
-  resize: vertical;
-  font-family: var(--mono);
-  font-size: 0.78rem;
-}
-
 .alert-error {
-  padding: 10px;
+  padding: 9px 12px;
   border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
-
-/* ---------- Animation ---------- */
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.45; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.1); }
-}
-
-.pulse-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: pulse 1.8s ease-in-out infinite;
+  font-size: 0.8rem;
+  word-break: break-word;
 }

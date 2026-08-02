@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { CornerLeftUp, File, Folder, FolderPlus, Minus, Plus, RefreshCw } from 'lucide-react';
 import { formatBytes } from '../format';
 import type { PaneState } from '../usePane';
 import type { RcloneFile } from '../types';
@@ -98,13 +99,19 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
 
       <div className="pane-toolbar">
         <div className="pane-toolbar-actions">
-          <button className="btn-link" onClick={() => pane.refresh(true)}>⟳ Refresh</button>
-          <button className="btn-link is-accent" onClick={onNewFolder}>+ New Folder</button>
+          <button className="btn-link" onClick={() => pane.refresh(true)}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+          <button className="btn-link is-accent" onClick={onNewFolder}>
+            <FolderPlus size={13} /> New Folder
+          </button>
         </div>
         <div className="stepper-label">
           <label htmlFor={`auto-${pane.remote}`}>Auto-refresh (s)</label>
           <div className="stepper">
-            <button aria-label="Decrease" onClick={() => pane.setAutoRefresh(Math.max(0, pane.autoRefresh - 1))}>−</button>
+            <button aria-label="Decrease" onClick={() => pane.setAutoRefresh(Math.max(0, pane.autoRefresh - 1))}>
+              <Minus size={12} />
+            </button>
             <input
               id={`auto-${pane.remote}`}
               type="number"
@@ -112,7 +119,9 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
               value={pane.autoRefresh}
               onChange={e => pane.setAutoRefresh(Math.max(0, parseInt(e.target.value) || 0))}
             />
-            <button aria-label="Increase" onClick={() => pane.setAutoRefresh(pane.autoRefresh + 1)}>+</button>
+            <button aria-label="Increase" onClick={() => pane.setAutoRefresh(pane.autoRefresh + 1)}>
+              <Plus size={12} />
+            </button>
           </div>
         </div>
       </div>
@@ -136,9 +145,9 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
             </div>
 
             {!atRoot && (
-              <div className="file-row" onClick={goUp} onDrop={handleDrop}>
+              <div className="file-row is-dir" onClick={goUp} onDrop={handleDrop}>
                 <span className="checkbox" style={{ visibility: 'hidden' }} />
-                <span className="file-icon">📁</span>
+                <span className="file-icon"><CornerLeftUp size={16} /></span>
                 <span className="file-name">..</span>
               </div>
             )}
@@ -146,7 +155,7 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
             {pane.files.map(file => (
               <div
                 key={file.Name}
-                className={`file-row${pane.selected.has(file.Name) ? ' is-selected' : ''}`}
+                className={`file-row${file.IsDir ? ' is-dir' : ''}${pane.selected.has(file.Name) ? ' is-selected' : ''}`}
                 draggable
                 onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify({
                   sourceRemote: pane.remote,
@@ -167,7 +176,9 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
                   checked={pane.selected.has(file.Name)}
                   onChange={() => pane.toggleFile(file.Name)}
                 />
-                <span className="file-icon">{file.IsDir ? '📁' : '📄'}</span>
+                <span className="file-icon">
+                  {file.IsDir ? <Folder size={16} /> : <File size={16} />}
+                </span>
                 <span className="file-name" title={file.Name}>{file.Name}</span>
                 {!file.IsDir && <span className="file-size">{formatBytes(file.Size)}</span>}
               </div>

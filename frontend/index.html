@@ -6,6 +6,14 @@
   <link rel="icon" type="image/png" href="/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>rcCommander</title>
+  <script>
+    // Apply a stored theme choice before first paint, so pinning light on an
+    // OS set to dark (or the reverse) never flashes the wrong scheme.
+    try {
+      var t = localStorage.getItem('rc-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (e) { /* private mode: fall back to following the OS */ }
+  </script>
 </head>
 
 <body>

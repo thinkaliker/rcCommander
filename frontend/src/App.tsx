@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft, ArrowLeftRight, ArrowRight, Monitor, Moon, RefreshCw, RotateCcw,
+  Settings2, Square, Sun, X,
+} from 'lucide-react';
 import './App.css';
 import { Pane } from './components/Pane';
 import type { DragPayload, DropTarget } from './components/Pane';
@@ -7,9 +11,17 @@ import {
   fileName, formatDuration, formatSpeed, parseDuration, parseSpeed, progressPercent,
 } from './format';
 import { usePane } from './usePane';
+import { useTheme } from './useTheme';
+import type { ThemeChoice } from './useTheme';
 import type { CopyJob } from './types';
 
 const LOCAL = 'Local Filesystem';
+
+const THEMES: { id: ThemeChoice; label: string; Icon: typeof Sun }[] = [
+  { id: 'light', label: 'Light theme', Icon: Sun },
+  { id: 'dark', label: 'Dark theme', Icon: Moon },
+  { id: 'auto', label: 'Match system theme', Icon: Monitor },
+];
 
 function App() {
   const [remotes, setRemotes] = useState<string[]>([LOCAL]);
@@ -22,6 +34,7 @@ function App() {
 
   const [activeJobs, setActiveJobs] = useState<Record<string, CopyJob>>({});
   const [isConnected, setIsConnected] = useState(true);
+  const [theme, setTheme] = useTheme();
 
   const [copyDirection, setCopyDirection] = useState<'L2R' | 'R2L' | null>(null);
   const [threads, setThreads] = useState(4);
@@ -233,12 +246,31 @@ function App() {
     <div className="app">
       <header className="app-header">
         <div className="brand">
+          <span className="brand-mark" aria-hidden="true"><ArrowLeftRight size={19} /></span>
           <h1>rclone<span>Commander</span></h1>
           <span className={`status-pill${isConnected ? '' : ' is-offline'}`}>
             {isConnected ? 'Connected' : 'Disconnected'}
           </span>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={showConfig}>Rclone Config</button>
+        <div className="header-actions">
+          <div className="theme-switch" role="group" aria-label="Colour theme">
+            {THEMES.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                className={`theme-switch-btn${theme === id ? ' is-active' : ''}`}
+                title={label}
+                aria-label={label}
+                aria-pressed={theme === id}
+                onClick={() => setTheme(id)}
+              >
+                <Icon size={14} />
+              </button>
+            ))}
+          </div>
+          <button className="btn btn-sm btn-ghost" onClick={showConfig}>
+            <Settings2 size={14} /> Rclone Config
+          </button>
+        </div>
       </header>
 
       <main className="workspace">
@@ -255,18 +287,22 @@ function App() {
 
         <div className="transfer-controls">
           <button
-            className="btn"
+            className="btn-round"
+            title="Copy left pane selection to the right"
+            aria-label="Copy left pane selection to the right"
             disabled={left.selected.size === 0}
             onClick={() => setCopyDirection('L2R')}
           >
-            Copy →
+            <ArrowRight size={20} />
           </button>
           <button
-            className="btn"
+            className="btn-round"
+            title="Copy right pane selection to the left"
+            aria-label="Copy right pane selection to the left"
             disabled={right.selected.size === 0}
             onClick={() => setCopyDirection('R2L')}
           >
-            ← Copy
+            <ArrowLeft size={20} />
           </button>
         </div>
 
@@ -290,7 +326,7 @@ function App() {
               className="btn btn-sm btn-ghost"
               onClick={() => { left.refresh(true); right.refresh(true); }}
             >
-              Refresh Folders
+              <RefreshCw size={13} /> Refresh Folders
             </button>
           </div>
 
@@ -310,7 +346,7 @@ function App() {
 
           <div className="jobs-list">
             {jobs.map(job => (
-              <article key={job.id} className={`job${job.status === 'error' ? ' is-error' : ''}`}>
+              <article key={job.id} className={`job is-${job.status}`}>
                 <div className="job-info">
                   <div className="job-title">
                     <span className="job-route" title={`${job.source} → ${job.destination}`}>
@@ -339,13 +375,19 @@ function App() {
 
                 <div className="job-actions">
                   {job.status === 'running' && (
-                    <button className="btn btn-sm btn-danger" onClick={() => jobAction('/copy/stop', job.id)}>Stop</button>
+                    <button className="btn btn-sm btn-danger" onClick={() => jobAction('/copy/stop', job.id)}>
+                      <Square size={12} /> Stop
+                    </button>
                   )}
                   {job.status === 'error' && (
-                    <button className="btn btn-sm" onClick={() => jobAction('/copy/restart', job.id)}>Restart</button>
+                    <button className="btn btn-sm" onClick={() => jobAction('/copy/restart', job.id)}>
+                      <RotateCcw size={12} /> Restart
+                    </button>
                   )}
                   {job.status !== 'running' && (
-                    <button className="btn btn-sm btn-ghost" onClick={() => handleDismissJob(job.id)}>Dismiss</button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => handleDismissJob(job.id)}>
+                      <X size={12} /> Dismiss
+                    </button>
                   )}
                 </div>
               </article>

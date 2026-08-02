@@ -1,38 +1,73 @@
-/* Design tokens + reset. Component styles live in App.css. */
+/* Design tokens, reset and primitives. Component styles live in App.css.
+
+   Theming uses the CSS `light-dark()` function, so each token is declared
+   exactly once with both values. Which half wins follows the used
+   `color-scheme`, which is `light dark` (i.e. follow the OS) until the theme
+   switch pins it by setting data-theme on <html>. */
 
 :root {
-  --bg: #0b0c10;
-  --bg-grad: radial-gradient(1200px 800px at 15% -10%, #1b2a35 0%, transparent 60%),
-             radial-gradient(1000px 700px at 100% 0%, #1a2430 0%, transparent 55%),
-             linear-gradient(160deg, #0b0c10, #12161d 60%, #0b0c10);
+  color-scheme: light dark;
 
-  --surface: rgba(255, 255, 255, 0.045);
-  --surface-2: rgba(0, 0, 0, 0.28);
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --hover: rgba(255, 255, 255, 0.07);
+  /* Surfaces ---------------------------------------------------------- */
+  --bg: light-dark(#eef0f5, #08090d);
+  --bg-glow-a: light-dark(rgba(99, 102, 241, 0.18), rgba(99, 102, 241, 0.16));
+  --bg-glow-b: light-dark(rgba(14, 165, 233, 0.14), rgba(34, 211, 238, 0.1));
 
-  --text: #c5c6c7;
-  --text-strong: #ffffff;
-  --text-dim: #8892b0;
+  /* --surface is a real panel colour, not a faint white wash, so every
+     region reads as its own card against the background. --surface-solid
+     approximates the composite for sticky rows that cannot blur. */
+  --surface: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 22, 30, 0.72));
+  --surface-2: light-dark(rgba(241, 243, 248, 0.75), rgba(10, 11, 16, 0.5));
+  --surface-3: light-dark(rgba(15, 23, 42, 0.055), rgba(255, 255, 255, 0.06));
+  --surface-solid: light-dark(#fbfcfe, #12141c);
 
-  --accent: #66fcf1;
-  --accent-dark: #45a29e;
-  --accent-soft: rgba(102, 252, 241, 0.14);
-  --danger: #ff5c5c;
-  --danger-soft: rgba(255, 92, 92, 0.12);
+  --border: light-dark(rgba(15, 23, 42, 0.13), rgba(255, 255, 255, 0.11));
+  --border-strong: light-dark(rgba(15, 23, 42, 0.24), rgba(255, 255, 255, 0.2));
 
+  --overlay-bg: light-dark(rgba(100, 116, 139, 0.45), rgba(4, 5, 8, 0.62));
+
+  /* Text -------------------------------------------------------------- */
+  --text: light-dark(#4b5563, #a5abbd);
+  --text-strong: light-dark(#0f172a, #f2f4f8);
+  --text-dim: light-dark(#7b8494, #737a8c);
+
+  /* Accents ----------------------------------------------------------- */
+  --accent: light-dark(#4f46e5, #818cf8);
+  --accent-hover: light-dark(#4338ca, #a5b4fc);
+  --accent-fg: light-dark(#ffffff, #0a0c18);
+  --accent-soft: light-dark(rgba(79, 70, 229, 0.1), rgba(129, 140, 248, 0.14));
+  --accent-ring: light-dark(rgba(79, 70, 229, 0.35), rgba(129, 140, 248, 0.4));
+  --accent-2: light-dark(#0891b2, #22d3ee);
+
+  --danger: light-dark(#e11d48, #fb7185);
+  --danger-soft: light-dark(rgba(225, 29, 72, 0.09), rgba(251, 113, 133, 0.13));
+  --success: light-dark(#16a34a, #4ade80);
+
+  /* Shape and depth --------------------------------------------------- */
   --radius: 14px;
-  --radius-sm: 8px;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --radius-sm: 9px;
+  --radius-pill: 999px;
 
-  /* No webfont download: this app is commonly run offline / on a LAN. */
+  --shadow: 0 12px 32px -13px light-dark(rgba(15, 23, 42, 0.3), rgba(0, 0, 0, 0.7));
+  --shadow-lg: 0 32px 64px -26px light-dark(rgba(15, 23, 42, 0.4), rgba(0, 0, 0, 0.8));
+
+  /* No webfont download: this app is commonly run offline or on a LAN. */
   --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
           'Helvetica Neue', Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+}
 
+/* Set by the theme switch (and by the inline script in index.html, before
+   first paint) to pin one scheme instead of following the OS. */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
   color-scheme: dark;
 }
+
+/* ---------- Reset ---------- */
 
 *,
 *::before,
@@ -55,8 +90,12 @@ body {
   font-size: 15px;
   line-height: 1.45;
   color: var(--text);
-  background: var(--bg);
-  background-image: var(--bg-grad);
+  background-color: var(--bg);
+  /* Two soft off-screen blooms give the flat background some depth without
+     costing an image request. `fixed` keeps them still while lists scroll. */
+  background-image:
+    radial-gradient(900px 620px at 12% -12%, var(--bg-glow-a), transparent 62%),
+    radial-gradient(760px 540px at 105% 4%, var(--bg-glow-b), transparent 58%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -74,7 +113,26 @@ textarea {
   color: inherit;
 }
 
-/* Hide native number spinners for a cleaner UI. */
+button {
+  background: none;
+  border: none;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+/* Icons inherit the colour and optical size of their button or row. */
+svg {
+  flex: none;
+  display: block;
+}
+
+/* Hide native number spinners; the app ships its own stepper buttons. */
 input[type='number']::-webkit-inner-spin-button,
 input[type='number']::-webkit-outer-spin-button {
   appearance: none;
@@ -88,6 +146,36 @@ input[type='number'] {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+/* Thin, self-coloured scrollbars so panes do not sprout a chunky OS bar. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -97,5 +185,6 @@ input[type='number'] {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
