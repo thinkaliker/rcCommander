@@ -278,6 +278,12 @@
   text-align: center;
   color: var(--text-dim);
   font-size: 0.86rem;
+  word-break: break-word;
+}
+
+/* A folder that failed to list must not read as a folder that is empty. */
+.pane-empty.is-error {
+  color: var(--danger);
 }
 
 /* ---------- Form controls ---------- */
@@ -295,8 +301,18 @@
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.select {
+/* The flex sizing below belongs to the pane header's horizontal row only.
+   `.field` stacks its children in a column, where a flex-basis would be read
+   as a height and stretch every modal input into a tall box. */
+.pane-header .select {
   flex: 0 1 170px;
+}
+
+.pane-header .input {
+  flex: 1 1 160px;
+}
+
+.select {
   cursor: pointer;
   /* Custom chevron; `appearance: none` also drops the OS control chrome that
      ignores our border radius. */
@@ -307,10 +323,6 @@
   background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
-}
-
-.input {
-  flex: 1 1 160px;
 }
 
 .select:focus,

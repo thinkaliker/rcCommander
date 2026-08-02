@@ -41,6 +41,10 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
   }
 
   const navigate = (file: RcloneFile) => {
+    // Ignore clicks while a listing is in flight: the row belongs to the
+    // folder we are leaving, so joining its name would build a path under a
+    // directory we have already navigated past.
+    if (pane.loading) return;
     if (file.IsDir) pane.setPath(joinPath(pane.path, file.Name));
   };
 
@@ -184,7 +188,11 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
               </div>
             ))}
 
-            {pane.files.length === 0 && <div className="pane-empty">This folder is empty.</div>}
+            {pane.files.length === 0 && (
+              pane.error
+                ? <div className="pane-empty is-error">{pane.error}</div>
+                : <div className="pane-empty">This folder is empty.</div>
+            )}
           </>
         )}
       </div>

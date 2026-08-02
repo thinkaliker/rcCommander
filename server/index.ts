@@ -168,7 +168,12 @@ app.post('/api/mkdir', async (req, res) => {
       const sub = pathParam ? `${pathParam}/${folderName}` : folderName;
       targetPath = resolveLocalPath(`Local Filesystem:${sub}`);
     } else {
-      targetPath = `${remote}:${pathParam ? pathParam + '/' : ''}${folderName}`;
+      // `rclone listremotes` already returns names with their trailing colon,
+      // so adding another one built paths like `jellyfin::media/new`. Append
+      // one only if the caller sent a bare name.
+      const spec = remote.endsWith(':') ? remote : `${remote}:`;
+      const prefix = pathParam ? `${pathParam.replace(/\/+$/, '')}/` : '';
+      targetPath = `${spec}${prefix}${folderName}`;
     }
     await execFileAsync('rclone', ['mkdir', targetPath]);
     res.json({ success: true, message: 'Folder created successfully' });

@@ -8,6 +8,7 @@ export interface PaneState {
   files: RcloneFile[];
   selected: Set<string>;
   loading: boolean;
+  error: string | null;
   autoRefresh: number;
   setRemote: (remote: string) => void;
   setPath: (path: string) => void;
@@ -38,23 +39,37 @@ export function usePane(ready: boolean): PaneState {
   const [files, setFiles] = useState<RcloneFile[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(0);
 
   const requestId = useRef(0);
 
   const load = useCallback(async (silent = false) => {
     const id = ++requestId.current;
-    if (!silent) setLoading(true);
+    if (!silent) {
+      setLoading(true);
+      // Drop the previous folder's rows the moment we navigate. Leaving them
+      // up while the new listing is in flight lets a click land on a stale
+      // entry, which appends that name onto the path we already moved to —
+      // most obvious on a slow remote, or a folder that turns out to be empty
+      // and so never replaces the rows with anything of its own.
+      setFiles([]);
+      setError(null);
+    }
     try {
       const data = await apiGet<{ files?: RcloneFile[] }>(
         `/files?path=${encodeURIComponent(remotePath(remote, path))}`
       );
       if (id !== requestId.current) return;
       setFiles(sortFiles(data.files ?? []));
+      setError(null);
     } catch (err) {
       if (id !== requestId.current) return;
       console.error(err);
-      setFiles([]);
+      // A failed background refresh keeps the last good listing; a failed
+      // navigation has nothing valid left to show.
+      if (!silent) setFiles([]);
+      setError((err as Error).message || 'Could not list this folder.');
     } finally {
       // Only the newest request may clear the spinner; a superseded response
       // landing late must not make an in-flight navigation look finished.
@@ -93,7 +108,7 @@ export function usePane(ready: boolean): PaneState {
   const clearSelection = useCallback(() => setSelected(new Set()), []);
 
   return {
-    remote, path, files, selected, loading, autoRefresh,
+    remote, path, files, selected, loading, error, autoRefresh,
     setRemote, setPath, setAutoRefresh,
     toggleFile, toggleAll, clearSelection,
     refresh: load,
