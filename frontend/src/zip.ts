@@ -1,35 +1,41 @@
-// Building the archive in the browser, streaming, so a multi-file download
-// arrives as one .zip instead of a burst of separate downloads.
-//
-// Nothing is compressed: everything here is already-stored bytes coming off a
-// remote, and deflating media on the main thread would cost time for no size
-// saving. Entries are added with ZipPassThrough, which is store-only.
-import { Zip, ZipPassThrough } from 'fflate';
+// Assembling a multi-file (or whole-folder) download into one archive in the
+// browser. The bytes are streamed through the zip writer and out to disk, so
+// this costs no more transfer than downloading the files separately, and — on a
+// browser with a save-file API — no more memory either.
+import { ZipWriter } from './zipwriter';
+import type { ZipSink } from './zipwriter';
 
 /**
- * fflate's zip *writer* emits 32-bit sizes and offsets with no zip64 record, so
- * anything at or past 4 GiB would produce an archive that unpacks wrongly.
- * Above this the caller falls back to downloading the files individually.
- */
-export const ZIP_MAX_TOTAL_BYTES = 4 * 1024 ** 3 - 1;
-
-/**
- * Without a save-file handle the archive has to be held in memory until it is
- * complete, so the ceiling is far lower on browsers that lack the API.
+ * Ceiling for the in-memory fallback. There is no format limit any more (the
+ * writer emits zip64 records), but a browser without a streaming save API has
+ * to hold the whole archive in memory until it is complete.
  */
 export const MEMORY_ZIP_MAX_BYTES = 1024 ** 3;
 
-export interface ZipEntrySource {
+/** How often progress is reported while a large entry streams past. */
+const PROGRESS_INTERVAL_MS = 100;
+
+export interface ZipEntry {
   /** Path inside the archive. */
   name: string;
-  /** Where the bytes come from. */
+  /** Size as listed, used to choose zip64 up front; negative means unknown. */
+  size: number;
   url: string;
+  /** The file's own mtime, so the archive preserves it. */
+  modified?: string;
+}
+
+export interface ZipPlan {
+  files: ZipEntry[];
+  /** Folders with nothing beneath them, which would otherwise vanish. */
+  emptyDirs: string[];
+  totalBytes: number;
+  /** How many of the selected items were folders. */
+  folders: number;
 }
 
 export interface ZipProgress {
-  /** Bytes written into the archive so far. */
   bytes: number;
-  /** Index of the entry being read, 0-based. */
   index: number;
   name: string;
 }
@@ -37,12 +43,6 @@ export interface ZipProgress {
 interface SaveFilePickerOptions {
   suggestedName?: string;
   types?: { description: string; accept: Record<string, string[]> }[];
-}
-
-interface FileSink {
-  write(chunk: Uint8Array): Promise<void>;
-  close(): Promise<void>;
-  abort(): Promise<void>;
 }
 
 type PickerWindow = Window & {
@@ -55,12 +55,12 @@ type PickerWindow = Window & {
   }>;
 };
 
-/** True when the archive can be streamed to disk instead of held in memory. */
+/** True when the archive can be streamed to disk rather than held in memory. */
 export function canStreamToDisk(): boolean {
   return typeof (window as PickerWindow).showSaveFilePicker === 'function';
 }
 
-/** Raised when the user dismisses the save dialog — not an error worth reporting. */
+/** Raised when the user backs out — not an error worth reporting. */
 export class ZipCancelled extends Error {}
 
 function saveBlob(blob: Blob, name: string) {
@@ -77,10 +77,10 @@ function saveBlob(blob: Blob, name: string) {
 
 /**
  * Ask for a file on disk to stream into, falling back to collecting the archive
- * in memory. The picker must be reached without awaiting anything first, or the
- * click's user activation will have expired by the time it is called.
+ * in memory. The picker needs transient user activation, so this must be
+ * reached from a click without awaiting anything first.
  */
-async function openSink(archiveName: string): Promise<FileSink> {
+async function openSink(archiveName: string): Promise<ZipSink> {
   const picker = (window as PickerWindow).showSaveFilePicker;
   if (picker) {
     try {
@@ -112,44 +112,34 @@ async function openSink(archiveName: string): Promise<FileSink> {
   };
 }
 
-/**
- * Stream every entry into one archive and hand it to the user.
- *
- * Each file is fetched and pushed through the zip writer chunk by chunk, and
- * the loop waits on the sink between reads, so memory stays bounded by roughly
- * one chunk rather than by the size of the selection.
- */
+/** Stream every entry into one archive and hand it to the user. */
 export async function downloadZip(
-  entries: ZipEntrySource[],
+  plan: ZipPlan,
   archiveName: string,
   onProgress: (progress: ZipProgress) => void,
   signal: AbortSignal,
 ): Promise<void> {
   const sink = await openSink(archiveName);
-
-  let queue: Promise<void> = Promise.resolve();
-  let settle!: () => void;
-  let fail!: (reason: unknown) => void;
-  const flushed = new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; });
-
-  const zip = new Zip((err, chunk, final) => {
-    if (err) {
-      fail(err);
-      return;
-    }
-    queue = queue.then(() => sink.write(chunk));
-    // `final` accompanies the last bytes of the central directory.
-    if (final) queue.then(settle, fail);
-  });
+  const writer = new ZipWriter(sink);
 
   let bytes = 0;
-  try {
-    for (const [index, entry] of entries.entries()) {
-      signal.throwIfAborted();
-      onProgress({ bytes, index, name: entry.name });
+  let lastReport = 0;
+  const report = (index: number, name: string, force = false) => {
+    const now = Date.now();
+    if (!force && now - lastReport < PROGRESS_INTERVAL_MS) return;
+    lastReport = now;
+    onProgress({ bytes, index, name });
+  };
 
-      const file = new ZipPassThrough(entry.name);
-      zip.add(file);
+  try {
+    for (const dir of plan.emptyDirs) {
+      signal.throwIfAborted();
+      await writer.addDirectory(dir);
+    }
+
+    for (const [index, entry] of plan.files.entries()) {
+      signal.throwIfAborted();
+      report(index, entry.name, true);
 
       const res = await fetch(entry.url, { signal });
       if (!res.ok || !res.body) {
@@ -157,24 +147,15 @@ export async function downloadZip(
         throw new Error(`${entry.name} — ${data.error || `download failed (${res.status})`}`);
       }
 
-      const reader = res.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        file.push(value, false);
-        bytes += value.length;
-        onProgress({ bytes, index, name: entry.name });
-        // Backpressure: never read faster than the archive is being written.
-        await queue;
-      }
-      file.push(new Uint8Array(0), true);
+      await writer.add(entry.name, entry.size, res.body, chunk => {
+        bytes += chunk;
+        report(index, entry.name);
+      }, entry.modified ? new Date(entry.modified) : undefined);
     }
 
-    zip.end();
-    await flushed;
-    await sink.close();
+    // finish() writes the central directory and closes the sink.
+    await writer.finish();
   } catch (e) {
-    zip.terminate();
     await sink.abort();
     throw signal.aborted ? new ZipCancelled('Download cancelled') : e;
   }

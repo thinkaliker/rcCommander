@@ -174,9 +174,10 @@ export const Pane: React.FC<PaneProps> = ({
 
   const atRoot = pane.path === '' || pane.path === '/';
   const allSelected = pane.files.length > 0 && pane.files.every(f => pane.selected.has(f.Name));
-  // Only files can be downloaded: the browser is handed one stream per file,
-  // and a folder has nothing to stream.
-  const selectedFiles = pane.files.filter(f => !f.IsDir && pane.selected.has(f.Name)).length;
+  // Folders count too: a selection of more than one item is packed into an
+  // archive, and a folder contributes its whole tree.
+  const picked = pane.files.filter(f => pane.selected.has(f.Name));
+  const pickedFolders = picked.filter(f => f.IsDir).length;
 
   return (
     <section
@@ -223,12 +224,13 @@ export const Pane: React.FC<PaneProps> = ({
           </button>
           <button
             className="btn-link"
-            disabled={selectedFiles === 0}
-            title={selectedFiles === 0
-              ? 'Select one or more files to download (folders cannot be downloaded)'
-              : selectedFiles === 1
+            disabled={picked.length === 0}
+            title={picked.length === 0
+              ? 'Select files or folders to download'
+              : picked.length === 1 && pickedFolders === 0
                 ? 'Download the selected file'
-                : `Download ${selectedFiles} selected files as a .zip`}
+                : `Download ${picked.length} selected item${picked.length === 1 ? '' : 's'} as a .zip${
+                    pickedFolders > 0 ? ' (folders included, with their contents)' : ''}`}
             onClick={onDownload}
           >
             <Download size={13} /> Download

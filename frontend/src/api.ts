@@ -1,3 +1,5 @@
+import type { RcloneFile } from './types';
+
 // Route relatively in production so reverse proxies work; in dev the Vite
 // server and the API live on different ports.
 export const API_BASE = import.meta.env.DEV
@@ -66,6 +68,18 @@ export async function uploadFile(
     if (data.cancelled) throw new UploadCancelled(data.error || 'Upload stopped');
     throw new Error(data.error || `Upload failed (${res.status})`);
   }
+}
+
+/**
+ * List a folder. With `recursive`, the server returns the whole subtree in one
+ * call (rclone lsjson -R), so packing a folder does not mean walking it a
+ * directory at a time from the browser.
+ */
+export async function listFolder(spec: string, recursive = false): Promise<RcloneFile[]> {
+  const query = new URLSearchParams({ path: spec });
+  if (recursive) query.set('recursive', '1');
+  const data = await apiGet<{ files?: RcloneFile[] }>(`/files?${query}`);
+  return data.files ?? [];
 }
 
 /** Direct link the browser can download a single file from. */

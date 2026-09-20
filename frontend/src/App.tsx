@@ -7,16 +7,15 @@ import './App.css';
 import { Pane } from './components/Pane';
 import type { DragItem, DragPayload, DropTarget } from './components/Pane';
 import {
-  API_BASE, apiGet, apiPost, downloadUrl, remotePath, runPool, uploadFile, UploadCancelled,
+  API_BASE, apiGet, apiPost, downloadUrl, listFolder, remotePath, runPool, uploadFile,
+  UploadCancelled,
 } from './api';
 import type { UploadTask } from './api';
 import {
   fileName, formatBytes, formatDuration, formatSpeed, parseDuration, parseSpeed, progressPercent,
 } from './format';
-import {
-  archiveNameFor, canStreamToDisk, downloadZip, MEMORY_ZIP_MAX_BYTES, ZipCancelled,
-  ZIP_MAX_TOTAL_BYTES,
-} from './zip';
+import { archiveNameFor, canStreamToDisk, downloadZip, MEMORY_ZIP_MAX_BYTES, ZipCancelled } from './zip';
+import type { ZipEntry, ZipPlan } from './zip';
 import { usePane } from './usePane';
 import type { PaneState } from './usePane';
 import { useTheme } from './useTheme';
@@ -80,8 +79,15 @@ function App() {
   // A client-side zip in progress. Cancelling it aborts the in-flight fetch and
   // throws the partial archive away.
   const [zipJob, setZipJob] = useState<
-    { name: string; files: number; index: number; bytes: number; total: number; skipped: number } | null
+    { name: string; files: number; index: number; bytes: number; total: number } | null
   >(null);
+  // A plan waiting on confirmation. Listing a folder tree takes long enough to
+  // lose the click's user activation, and the save-file picker needs a live
+  // one — so the archive is described first and started from a fresh click.
+  const [zipPrep, setZipPrep] = useState<
+    { plan: ZipPlan; archiveName: string; overLimit: boolean } | null
+  >(null);
+  const [isListing, setIsListing] = useState(false);
   const zipAbort = useRef<AbortController | null>(null);
 
   const setRightRemote = right.setRemote;
@@ -278,10 +284,10 @@ function App() {
   };
 
   /** Hand the browser one file, letting Content-Disposition do the rest. */
-  const saveOne = (pane: PaneState, name: string) => {
+  const saveUrl = (url: string, filename: string) => {
     const link = document.createElement('a');
-    link.href = downloadUrl(remotePath(pane.remote, pane.path, name));
-    link.download = name;
+    link.href = url;
+    link.download = filename;
     link.rel = 'noopener';
     document.body.appendChild(link);
     link.click();
@@ -289,26 +295,73 @@ function App() {
   };
 
   /** Separate downloads, spaced out — the browser copes badly with a burst. */
-  const saveIndividually = (pane: PaneState, files: RcloneFile[]) => {
-    files.forEach((file, index) => {
-      window.setTimeout(() => saveOne(pane, file.Name), index * DOWNLOAD_STAGGER_MS);
+  const saveIndividually = (entries: ZipEntry[]) => {
+    entries.forEach((entry, index) => {
+      const filename = entry.name.split('/').pop() || entry.name;
+      window.setTimeout(() => saveUrl(entry.url, filename), index * DOWNLOAD_STAGGER_MS);
     });
   };
 
-  const runZip = async (pane: PaneState, files: RcloneFile[], total: number, skipped: number) => {
+  /**
+   * Turn a selection into a flat list of archive entries. Folders are expanded
+   * with one recursive listing each, rather than a request per directory.
+   */
+  const buildZipPlan = async (pane: PaneState, picked: RcloneFile[]): Promise<ZipPlan> => {
+    const files: ZipEntry[] = [];
+    const emptyDirs: string[] = [];
+    let folders = 0;
+
+    for (const item of picked) {
+      const spec = remotePath(pane.remote, pane.path, item.Name);
+      if (!item.IsDir) {
+        files.push({ name: item.Name, size: item.Size, url: downloadUrl(spec), modified: item.ModTime });
+        continue;
+      }
+
+      folders++;
+      const listing = await listFolder(spec, true);
+      const treeFiles = listing.filter(entry => !entry.IsDir);
+      const treeDirs = listing.filter(entry => entry.IsDir).map(entry => entry.Path);
+
+      // Any directory on the path to a file is implied by that file's entry.
+      // Whatever is left has nothing beneath it and needs an entry of its own,
+      // or it would disappear from the archive.
+      const populated = new Set<string>();
+      for (const file of treeFiles) {
+        let parent = file.Path;
+        for (let cut = parent.lastIndexOf('/'); cut > 0; cut = parent.lastIndexOf('/')) {
+          parent = parent.slice(0, cut);
+          populated.add(parent);
+        }
+      }
+      for (const dir of treeDirs) {
+        if (!populated.has(dir)) emptyDirs.push(`${item.Name}/${dir}`);
+      }
+      if (listing.length === 0) emptyDirs.push(item.Name);
+
+      for (const file of treeFiles) {
+        const relative = `${item.Name}/${file.Path}`;
+        files.push({
+          name: relative,
+          size: file.Size,
+          url: downloadUrl(remotePath(pane.remote, pane.path, relative)),
+          modified: file.ModTime,
+        });
+      }
+    }
+
+    const totalBytes = files.reduce((sum, entry) => sum + Math.max(0, entry.size), 0);
+    return { files, emptyDirs, totalBytes, folders };
+  };
+
+  const runZip = async (plan: ZipPlan, archiveName: string) => {
     const controller = new AbortController();
     zipAbort.current = controller;
-    const archiveName = archiveNameFor(pane.remote, pane.path);
-    setZipJob({ name: archiveName, files: files.length, index: 0, bytes: 0, total, skipped });
+    setZipJob({ name: archiveName, files: plan.files.length, index: 0, bytes: 0, total: plan.totalBytes });
 
     try {
-      // The save dialog has to be reached while the click's user activation is
-      // still live, so nothing may be awaited ahead of downloadZip.
       await downloadZip(
-        files.map(file => ({
-          name: file.Name,
-          url: downloadUrl(remotePath(pane.remote, pane.path, file.Name)),
-        })),
+        plan,
         archiveName,
         ({ bytes, index }) => setZipJob(prev => (prev ? { ...prev, bytes, index } : prev)),
         controller.signal,
@@ -325,49 +378,57 @@ function App() {
   };
 
   /**
-   * A multi-file selection is zipped in the browser and saved as one archive.
-   * The bytes are streamed through the zip writer, so this costs no more
-   * transfer than the separate downloads it replaces — but the zip format as
-   * written here tops out at 4 GiB, and holding the archive in memory (on
-   * browsers without a save-file API) tops out lower still. Past either limit
-   * the files are handed over individually instead.
+   * Start a zip, or explain why it cannot be one. There is no longer a format
+   * ceiling — the writer emits zip64 — but a browser with no streaming save API
+   * must hold the whole archive in memory, which is a real limit.
    */
-  const handleDownload = (pane: PaneState) => {
+  const startZip = (plan: ZipPlan, archiveName: string) => {
+    if (!canStreamToDisk() && plan.totalBytes > MEMORY_ZIP_MAX_BYTES) {
+      setZipPrep({ plan, archiveName, overLimit: true });
+      return;
+    }
+    runZip(plan, archiveName);
+  };
+
+  const handleDownload = async (pane: PaneState) => {
     const picked = pane.files.filter(f => pane.selected.has(f.Name));
-    const files = picked.filter(f => !f.IsDir);
-    const folders = picked.length - files.length;
-    if (files.length === 0) return;
+    if (picked.length === 0) return;
 
-    const warnFolders = () => {
-      if (folders === 0) return;
-      setNotice({
-        title: 'Folders were skipped',
-        body: `${folders} folder${folders === 1 ? '' : 's'} in the selection ${folders === 1 ? 'was' : 'were'} not downloaded — only files can be added to the archive. Copy folders across to the other pane instead.`,
-      });
-    };
+    const archiveName = archiveNameFor(pane.remote, pane.path);
 
-    if (files.length === 1) {
-      saveOne(pane, files[0].Name);
-      warnFolders();
+    // A lone file is handed over as itself — no archive, no dialog.
+    if (picked.length === 1 && !picked[0].IsDir) {
+      saveUrl(downloadUrl(remotePath(pane.remote, pane.path, picked[0].Name)), picked[0].Name);
       return;
     }
 
-    const total = files.reduce((sum, file) => sum + (file.Size > 0 ? file.Size : 0), 0);
-    const ceiling = canStreamToDisk() ? ZIP_MAX_TOTAL_BYTES : MEMORY_ZIP_MAX_BYTES;
-    if (total > ceiling) {
-      saveIndividually(pane, files);
-      setNotice({
-        title: 'Downloaded as separate files',
-        body: `The selection is ${formatBytes(total)}, over the ${formatBytes(ceiling)} this browser can safely zip${
-          canStreamToDisk() ? '' : ' (it has to hold the whole archive in memory)'
-        }. The ${files.length} files are being downloaded individually instead.${
-          folders > 0 ? `\n\n${folders} folder${folders === 1 ? '' : 's'} in the selection ${folders === 1 ? 'was' : 'were'} skipped.` : ''
-        }`,
-      });
+    // Files only: the listing is already in hand, so the picker can still be
+    // opened on this click's activation.
+    if (picked.every(item => !item.IsDir)) {
+      const plan = await buildZipPlan(pane, picked);
+      startZip(plan, archiveName);
       return;
     }
 
-    runZip(pane, files, total, folders);
+    // Folders have to be listed first, which loses the activation — so the
+    // plan is shown for confirmation and started from that dialog's click.
+    setIsListing(true);
+    try {
+      const plan = await buildZipPlan(pane, picked);
+      if (plan.files.length === 0 && plan.emptyDirs.length === 0) {
+        setNotice({ title: 'Nothing to download', body: 'The selected folders contain no files.' });
+        return;
+      }
+      setZipPrep({
+        plan,
+        archiveName,
+        overLimit: !canStreamToDisk() && plan.totalBytes > MEMORY_ZIP_MAX_BYTES,
+      });
+    } catch (e) {
+      setNotice({ title: 'Could not list the selection', body: (e as Error).message });
+    } finally {
+      setIsListing(false);
+    }
   };
 
   const handleDragAndDrop = (source: DragPayload, dest: DropTarget) => {
@@ -736,6 +797,70 @@ function App() {
         </div>
       )}
 
+      {isListing && (
+        <div className="overlay">
+          <div className="modal">
+            <h2>Reading the selection</h2>
+            <p>Listing the selected folders…</p>
+          </div>
+        </div>
+      )}
+
+      {zipPrep && (
+        <div className="overlay" onClick={() => setZipPrep(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>{zipPrep.overLimit ? 'Too large to zip in this browser' : 'Download as archive'}</h2>
+            <p>
+              <strong>{zipPrep.plan.files.length}</strong> file{zipPrep.plan.files.length === 1 ? '' : 's'}
+              {zipPrep.plan.folders > 0 && <> from <strong>{zipPrep.plan.folders}</strong> folder{zipPrep.plan.folders === 1 ? '' : 's'}</>}
+              {' '}— <strong>{formatBytes(zipPrep.plan.totalBytes)}</strong> in total.
+            </p>
+
+            {zipPrep.overLimit ? (
+              <p className="modal-note">
+                This browser has no streaming save API, so the whole archive would have to be
+                held in memory, and the selection is over the {formatBytes(MEMORY_ZIP_MAX_BYTES)} that
+                is safe to do that with. Open rcCommander in Chrome or Edge to get it as one
+                archive, or download the files separately.
+              </p>
+            ) : (
+              <p className="modal-note">
+                Saved as <strong>{zipPrep.archiveName}</strong>, written straight to disk as the
+                files arrive. Folder structure is preserved.
+              </p>
+            )}
+
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setZipPrep(null)}>Cancel</button>
+              {zipPrep.overLimit ? (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    const { plan } = zipPrep;
+                    setZipPrep(null);
+                    saveIndividually(plan.files);
+                  }}
+                >
+                  Download {zipPrep.plan.files.length} files separately
+                </button>
+              ) : (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    const { plan, archiveName } = zipPrep;
+                    setZipPrep(null);
+                    // This click is the user activation the save picker needs.
+                    runZip(plan, archiveName);
+                  }}
+                >
+                  Save archive
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {zipJob && (
         <div className="overlay">
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -752,7 +877,6 @@ function App() {
             </div>
             <p className="modal-note">
               The archive is written as the files arrive. Leaving this page cancels it.
-              {zipJob.skipped > 0 && ` ${zipJob.skipped} folder${zipJob.skipped === 1 ? '' : 's'} in the selection ${zipJob.skipped === 1 ? 'was' : 'were'} skipped — only files can be added.`}
             </p>
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={() => zipAbort.current?.abort()}>Cancel</button>

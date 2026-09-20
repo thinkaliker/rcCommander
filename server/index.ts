@@ -141,16 +141,24 @@ app.get('/api/remotes', async (req, res) => {
   }
 });
 
+// A whole tree's listing is far larger than execFile's 1 MB default, which
+// would otherwise fail a recursive listing with ENOBUFS partway through.
+const LSJSON_MAX_BUFFER = 64 * 1024 * 1024;
+
 app.get('/api/files', async (req, res) => {
   const targetPath = req.query.path as string;
   if (!targetPath) {
     return res.status(400).json({ error: 'path query parameter is required' });
   }
+  // Used when a folder is being packed into an archive: one call returns the
+  // entire subtree, rather than the client walking it a directory at a time.
+  const recursive = req.query.recursive === '1';
 
   try {
     // Local paths are confined to LOCAL_ROOT; remotes pass through unchanged.
     const rclonePath = toRclonePath(targetPath);
-    const { stdout } = await execFileAsync('rclone', ['lsjson', rclonePath]);
+    const args = recursive ? ['lsjson', '-R', rclonePath] : ['lsjson', rclonePath];
+    const { stdout } = await execFileAsync('rclone', args, { maxBuffer: LSJSON_MAX_BUFFER });
     const files = JSON.parse(stdout);
     res.json({ files });
   } catch (error: any) {
