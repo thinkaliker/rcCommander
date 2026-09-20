@@ -422,16 +422,22 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.btn-link:hover {
+.btn-link:hover:not(:disabled) {
   background: var(--surface-3);
   color: var(--text-strong);
+}
+
+/* Download stays visible but clearly inert until something is selected. */
+.btn-link:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .btn-link.is-accent {
   color: var(--accent);
 }
 
-.btn-link.is-accent:hover {
+.btn-link.is-accent:hover:not(:disabled) {
   background: var(--accent-soft);
 }
 
@@ -893,6 +899,12 @@
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Upload failures arrive as one line per file, so keep the newlines. */
+.notice-body {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .alert-error {

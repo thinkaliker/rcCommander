@@ -6,17 +6,33 @@ import {
 import './App.css';
 import { Pane } from './components/Pane';
 import type { DragItem, DragPayload, DropTarget } from './components/Pane';
-import { API_BASE, apiGet, apiPost, remotePath } from './api';
 import {
-  fileName, formatDuration, formatSpeed, parseDuration, parseSpeed, progressPercent,
+  API_BASE, apiGet, apiPost, downloadUrl, remotePath, runPool, uploadFile, UploadCancelled,
+} from './api';
+import type { UploadTask } from './api';
+import {
+  fileName, formatBytes, formatDuration, formatSpeed, parseDuration, parseSpeed, progressPercent,
 } from './format';
+import {
+  archiveNameFor, canStreamToDisk, downloadZip, MEMORY_ZIP_MAX_BYTES, ZipCancelled,
+  ZIP_MAX_TOTAL_BYTES,
+} from './zip';
 import { usePane } from './usePane';
+import type { PaneState } from './usePane';
 import { useTheme } from './useTheme';
 import type { ThemeChoice } from './useTheme';
 import { clampAutoRefresh, clampAutoRemove, clampThreads, useSettings } from './useSettings';
-import type { CopyJob } from './types';
+import type { CopyJob, RcloneFile } from './types';
 
 const LOCAL = 'Local Filesystem';
+
+/** Uploads in flight at once. Enough to keep a folder of small files moving
+    without opening a connection per file. */
+const UPLOAD_CONCURRENCY = 3;
+
+/** Gap between the download links we hand the browser, which copes badly with
+    a burst of them fired in the same tick. */
+const DOWNLOAD_STAGGER_MS = 400;
 
 /** One pane-to-pane transfer, before the thread/auto-remove numbers are applied. */
 interface CopyRequest {
@@ -58,8 +74,23 @@ function App() {
   const [mkdirTarget, setMkdirTarget] = useState<{ remote: string; path: string; side: 'left' | 'right' } | null>(null);
   const [mkdirName, setMkdirName] = useState('');
   const [mkdirError, setMkdirError] = useState('');
+  // A one-off "here is what happened" dialog: upload failures, and folders left
+  // out of a download.
+  const [notice, setNotice] = useState<{ title: string; body: string } | null>(null);
+  // A client-side zip in progress. Cancelling it aborts the in-flight fetch and
+  // throws the partial archive away.
+  const [zipJob, setZipJob] = useState<
+    { name: string; files: number; index: number; bytes: number; total: number; skipped: number } | null
+  >(null);
+  const zipAbort = useRef<AbortController | null>(null);
 
   const setRightRemote = right.setRemote;
+
+  // An upload runs for as long as it takes, by which time the panes above are
+  // from a render long past. This ref always holds the live ones, so the
+  // refresh afterwards lists where a pane is now — not where it was at drop time.
+  const panesRef = useRef({ left, right });
+  useEffect(() => { panesRef.current = { left, right }; });
 
   // Forward browser-side errors to the server log.
   useEffect(() => {
@@ -212,6 +243,133 @@ function App() {
     if (request) runCopy(request, draftThreads, draftAutoRemove);
   };
 
+  const handleUploadFiles = async (tasks: UploadTask[], dest: DropTarget) => {
+    if (tasks.length === 0) return;
+    const destSpec = remotePath(dest.destRemote, dest.destPath);
+    const failures: string[] = [];
+
+    await runPool(tasks, UPLOAD_CONCURRENCY, async task => {
+      try {
+        // Each upload registers itself as a job server-side, so its progress
+        // shows up in the same panel as an rclone copy.
+        await uploadFile(task, destSpec, settings.autoRemove);
+      } catch (e) {
+        // Stopping an upload from the jobs panel is a deliberate act; the job
+        // row already says so, and it is not something to report as a failure.
+        if (e instanceof UploadCancelled) return;
+        failures.push(`${task.relPath} — ${(e as Error).message}`);
+      }
+    });
+
+    // Only the pane that took the drop needs re-listing, and only while it is
+    // still showing that folder.
+    for (const pane of [panesRef.current.left, panesRef.current.right]) {
+      if (pane.remote === dest.destRemote && pane.path === dest.destPath) pane.refresh(true);
+    }
+
+    if (failures.length > 0) {
+      const shown = failures.slice(0, 8);
+      if (failures.length > shown.length) shown.push(`…and ${failures.length - shown.length} more.`);
+      setNotice({
+        title: `${failures.length} of ${tasks.length} upload${tasks.length === 1 ? '' : 's'} failed`,
+        body: shown.join('\n'),
+      });
+    }
+  };
+
+  /** Hand the browser one file, letting Content-Disposition do the rest. */
+  const saveOne = (pane: PaneState, name: string) => {
+    const link = document.createElement('a');
+    link.href = downloadUrl(remotePath(pane.remote, pane.path, name));
+    link.download = name;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  /** Separate downloads, spaced out — the browser copes badly with a burst. */
+  const saveIndividually = (pane: PaneState, files: RcloneFile[]) => {
+    files.forEach((file, index) => {
+      window.setTimeout(() => saveOne(pane, file.Name), index * DOWNLOAD_STAGGER_MS);
+    });
+  };
+
+  const runZip = async (pane: PaneState, files: RcloneFile[], total: number, skipped: number) => {
+    const controller = new AbortController();
+    zipAbort.current = controller;
+    const archiveName = archiveNameFor(pane.remote, pane.path);
+    setZipJob({ name: archiveName, files: files.length, index: 0, bytes: 0, total, skipped });
+
+    try {
+      // The save dialog has to be reached while the click's user activation is
+      // still live, so nothing may be awaited ahead of downloadZip.
+      await downloadZip(
+        files.map(file => ({
+          name: file.Name,
+          url: downloadUrl(remotePath(pane.remote, pane.path, file.Name)),
+        })),
+        archiveName,
+        ({ bytes, index }) => setZipJob(prev => (prev ? { ...prev, bytes, index } : prev)),
+        controller.signal,
+      );
+    } catch (e) {
+      // A dismissed save dialog or a cancel press is a choice, not a failure.
+      if (!(e instanceof ZipCancelled)) {
+        setNotice({ title: 'Could not build the archive', body: (e as Error).message });
+      }
+    } finally {
+      zipAbort.current = null;
+      setZipJob(null);
+    }
+  };
+
+  /**
+   * A multi-file selection is zipped in the browser and saved as one archive.
+   * The bytes are streamed through the zip writer, so this costs no more
+   * transfer than the separate downloads it replaces — but the zip format as
+   * written here tops out at 4 GiB, and holding the archive in memory (on
+   * browsers without a save-file API) tops out lower still. Past either limit
+   * the files are handed over individually instead.
+   */
+  const handleDownload = (pane: PaneState) => {
+    const picked = pane.files.filter(f => pane.selected.has(f.Name));
+    const files = picked.filter(f => !f.IsDir);
+    const folders = picked.length - files.length;
+    if (files.length === 0) return;
+
+    const warnFolders = () => {
+      if (folders === 0) return;
+      setNotice({
+        title: 'Folders were skipped',
+        body: `${folders} folder${folders === 1 ? '' : 's'} in the selection ${folders === 1 ? 'was' : 'were'} not downloaded — only files can be added to the archive. Copy folders across to the other pane instead.`,
+      });
+    };
+
+    if (files.length === 1) {
+      saveOne(pane, files[0].Name);
+      warnFolders();
+      return;
+    }
+
+    const total = files.reduce((sum, file) => sum + (file.Size > 0 ? file.Size : 0), 0);
+    const ceiling = canStreamToDisk() ? ZIP_MAX_TOTAL_BYTES : MEMORY_ZIP_MAX_BYTES;
+    if (total > ceiling) {
+      saveIndividually(pane, files);
+      setNotice({
+        title: 'Downloaded as separate files',
+        body: `The selection is ${formatBytes(total)}, over the ${formatBytes(ceiling)} this browser can safely zip${
+          canStreamToDisk() ? '' : ' (it has to hold the whole archive in memory)'
+        }. The ${files.length} files are being downloaded individually instead.${
+          folders > 0 ? `\n\n${folders} folder${folders === 1 ? '' : 's'} in the selection ${folders === 1 ? 'was' : 'were'} skipped.` : ''
+        }`,
+      });
+      return;
+    }
+
+    runZip(pane, files, total, folders);
+  };
+
   const handleDragAndDrop = (source: DragPayload, dest: DropTarget) => {
     requestCopy({
       sourceRemote: source.sourceRemote,
@@ -328,6 +486,8 @@ function App() {
           pane={left}
           remotes={remotes}
           onDropFile={handleDragAndDrop}
+          onUploadFiles={handleUploadFiles}
+          onDownload={() => handleDownload(left)}
           showAutoRefresh={settings.perPaneRefresh}
           onNewFolder={() => {
             setMkdirTarget({ remote: left.remote, path: left.path, side: 'left' });
@@ -361,6 +521,8 @@ function App() {
           pane={right}
           remotes={remotes}
           onDropFile={handleDragAndDrop}
+          onUploadFiles={handleUploadFiles}
+          onDownload={() => handleDownload(right)}
           showAutoRefresh={settings.perPaneRefresh}
           onNewFolder={() => {
             setMkdirTarget({ remote: right.remote, path: right.path, side: 'right' });
@@ -425,7 +587,7 @@ function App() {
                       <Square size={12} /> Stop
                     </button>
                   )}
-                  {job.status === 'error' && (
+                  {job.status === 'error' && job.kind !== 'upload' && (
                     <button className="btn btn-sm" onClick={() => jobAction('/copy/restart', job.id)}>
                       <RotateCcw size={12} /> Restart
                     </button>
@@ -569,6 +731,43 @@ function App() {
 
             <div className="modal-actions">
               <button className="btn" onClick={() => setIsSettingsOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {zipJob && (
+        <div className="overlay">
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Building {zipJob.name}</h2>
+            <p>
+              Adding file {Math.min(zipJob.index + 1, zipJob.files)} of {zipJob.files} —{' '}
+              {formatBytes(zipJob.bytes)} of {formatBytes(zipJob.total)}
+            </p>
+            <div className="progress-track">
+              <div
+                className="progress-fill"
+                style={{ width: `${zipJob.total > 0 ? Math.min(100, (zipJob.bytes / zipJob.total) * 100) : 0}%` }}
+              />
+            </div>
+            <p className="modal-note">
+              The archive is written as the files arrive. Leaving this page cancels it.
+              {zipJob.skipped > 0 && ` ${zipJob.skipped} folder${zipJob.skipped === 1 ? '' : 's'} in the selection ${zipJob.skipped === 1 ? 'was' : 'were'} skipped — only files can be added.`}
+            </p>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => zipAbort.current?.abort()}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {notice && (
+        <div className="overlay" onClick={() => setNotice(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>{notice.title}</h2>
+            <p className="notice-body">{notice.body}</p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setNotice(null)}>Close</button>
             </div>
           </div>
         </div>

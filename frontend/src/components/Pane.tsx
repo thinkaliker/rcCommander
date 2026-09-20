@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
-import { CornerLeftUp, File, Folder, FolderPlus, Minus, Plus, RefreshCw } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import {
+  CornerLeftUp, Download, File, Folder, FolderPlus, Minus, Plus, RefreshCw, Upload,
+} from 'lucide-react';
 import { formatBytes } from '../format';
+import type { UploadTask } from '../api';
 import type { PaneState } from '../usePane';
 import type { RcloneFile } from '../types';
 
@@ -25,6 +28,9 @@ interface PaneProps {
   remotes: string[];
   onDropFile: (source: DragPayload, dest: DropTarget) => void;
   onNewFolder: () => void;
+  /** Files picked from the desktop — dropped onto the pane or chosen in the file dialog. */
+  onUploadFiles: (tasks: UploadTask[], dest: DropTarget) => void;
+  onDownload: () => void;
   /** Off by default: the auto-refresh interval is a global setting unless the
       user opts into setting it per pane. */
   showAutoRefresh: boolean;
@@ -35,10 +41,60 @@ const joinPath = (base: string, name: string) => {
   return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`;
 };
 
-export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFolder, showAutoRefresh }) => {
+/** readEntries hands back at most a batch at a time; keep asking until it is empty. */
+const readAllEntries = (reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> =>
+  new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+
+/**
+ * Flatten a desktop drop into upload tasks, walking into any dropped folders so
+ * their structure survives the transfer.
+ *
+ * The DataTransfer is emptied as soon as the drop handler returns, so every
+ * entry has to be taken off it before the first `await` — which is exactly what
+ * the synchronous prelude below does.
+ */
+async function collectDropFiles(dt: DataTransfer): Promise<UploadTask[]> {
+  const roots: FileSystemEntry[] = [];
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== 'file') continue;
+    const entry = item.webkitGetAsEntry?.();
+    if (entry) roots.push(entry);
+  }
+  // No entry API (or a drag that carries plain files only): the flat list of
+  // files is still enough for everything but folders.
+  if (roots.length === 0) {
+    return Array.from(dt.files).map(file => ({ file, relPath: file.name }));
+  }
+
+  const tasks: UploadTask[] = [];
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) =>
+        (entry as FileSystemFileEntry).file(resolve, reject)
+      );
+      tasks.push({ file, relPath: `${prefix}${entry.name}` });
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    for (;;) {
+      const batch = await readAllEntries(reader);
+      if (batch.length === 0) break;
+      for (const child of batch) await walk(child, `${prefix}${entry.name}/`);
+    }
+  };
+
+  for (const entry of roots) await walk(entry, '');
+  return tasks;
+}
+
+export const Pane: React.FC<PaneProps> = ({
+  pane, remotes, onDropFile, onNewFolder, onUploadFiles, onDownload, showAutoRefresh,
+}) => {
   const [pathInput, setPathInput] = useState(pane.path);
   const [syncedPath, setSyncedPath] = useState(pane.path);
   const [isDragOver, setIsDragOver] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   // Reset the draft during render (not in an effect) when navigation changes
   // the pane's path, so the box never paints a stale value for a frame.
@@ -66,16 +122,39 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const raw = e.dataTransfer.getData('application/json');
-    if (!raw) return;
-    try {
-      const data: DragPayload = JSON.parse(raw);
-      if (!Array.isArray(data.items) || data.items.length === 0) return;
-      if (data.sourceRemote === pane.remote && data.sourcePath === pane.path) return;
-      onDropFile(data, { destRemote: pane.remote, destPath: pane.path });
-    } catch {
-      /* not one of our drags */
+    const dt = e.dataTransfer;
+
+    // A drag from the other pane carries our own payload; anything else that
+    // brings files along came from the desktop and is an upload.
+    const raw = dt.getData('application/json');
+    if (raw) {
+      try {
+        const data: DragPayload = JSON.parse(raw);
+        if (!Array.isArray(data.items) || data.items.length === 0) return;
+        if (data.sourceRemote === pane.remote && data.sourcePath === pane.path) return;
+        onDropFile(data, { destRemote: pane.remote, destPath: pane.path });
+      } catch {
+        /* not one of our drags */
+      }
+      return;
     }
+
+    if (!Array.from(dt.types).includes('Files')) return;
+    const dest = { destRemote: pane.remote, destPath: pane.path };
+    collectDropFiles(dt)
+      .then(tasks => { if (tasks.length > 0) onUploadFiles(tasks, dest); })
+      .catch(err => console.error(`Could not read the dropped files: ${(err as Error).message}`));
+  };
+
+  const handlePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    // Clear it first, so picking the same file twice in a row still fires.
+    e.target.value = '';
+    if (picked.length === 0) return;
+    onUploadFiles(
+      picked.map(file => ({ file, relPath: file.name })),
+      { destRemote: pane.remote, destPath: pane.path },
+    );
   };
 
   // Dragging a row that is part of the selection moves the whole selection;
@@ -95,6 +174,9 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
 
   const atRoot = pane.path === '' || pane.path === '/';
   const allSelected = pane.files.length > 0 && pane.files.every(f => pane.selected.has(f.Name));
+  // Only files can be downloaded: the browser is handed one stream per file,
+  // and a folder has nothing to stream.
+  const selectedFiles = pane.files.filter(f => !f.IsDir && pane.selected.has(f.Name)).length;
 
   return (
     <section
@@ -132,6 +214,33 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
           <button className="btn-link is-accent" onClick={onNewFolder}>
             <FolderPlus size={13} /> New Folder
           </button>
+          <button
+            className="btn-link is-accent"
+            title="Upload files from this computer into the current folder"
+            onClick={() => fileInput.current?.click()}
+          >
+            <Upload size={13} /> Upload
+          </button>
+          <button
+            className="btn-link"
+            disabled={selectedFiles === 0}
+            title={selectedFiles === 0
+              ? 'Select one or more files to download (folders cannot be downloaded)'
+              : selectedFiles === 1
+                ? 'Download the selected file'
+                : `Download ${selectedFiles} selected files as a .zip`}
+            onClick={onDownload}
+          >
+            <Download size={13} /> Download
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            hidden
+            aria-hidden="true"
+            onChange={handlePicked}
+          />
         </div>
         {showAutoRefresh && (
           <div className="stepper-label">

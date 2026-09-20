@@ -43,6 +43,11 @@ app.use(express.json({ limit: '50kb' }));
 // Simple in-memory rate limiter for the API (no external deps).
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 300;
+// Uploads and downloads are one request per file, so dropping a folder of a few
+// hundred files is normal traffic rather than abuse. They are still bounded,
+// just on a separate, roomier budget than the polling endpoints.
+const TRANSFER_MAX = 2000;
+const isTransfer = (p: string) => p === '/upload' || p === '/download';
 const rateHits = new Map<string, { count: number; reset: number }>();
 // Evict expired buckets periodically so the map cannot grow without bound.
 setInterval(() => {
@@ -52,14 +57,15 @@ setInterval(() => {
   }
 }, RATE_WINDOW_MS).unref();
 app.use('/api', (req, res, next) => {
-  const key = req.ip || 'unknown';
+  const transfer = isTransfer(req.path);
+  const key = `${transfer ? 'transfer' : 'api'}:${req.ip || 'unknown'}`;
   const now = Date.now();
   const entry = rateHits.get(key);
   if (!entry || now > entry.reset) {
     rateHits.set(key, { count: 1, reset: now + RATE_WINDOW_MS });
     return next();
   }
-  if (entry.count >= RATE_MAX) {
+  if (entry.count >= (transfer ? TRANSFER_MAX : RATE_MAX)) {
     return res.status(429).json({ error: 'Too many requests' });
   }
   entry.count++;
@@ -84,6 +90,9 @@ app.post('/api/log', (req, res) => {
 // Data structures for tracking jobs
 interface CopyJob {
   id: string;
+  // 'copy' is a server-side rclone copy; 'upload' is a browser stream being
+  // rcat'd into place. They differ in what actions make sense on them.
+  kind: 'copy' | 'upload';
   source: string;
   destination: string;
   progress: string; // latest percentage or text from stdout
@@ -306,6 +315,7 @@ app.post('/api/copy', (req, res) => {
 
   activeJobs[jobId] = {
     id: jobId,
+    kind: 'copy',
     source: srcPath,
     destination: destPath,
     progress: 'Starting...',
@@ -369,6 +379,11 @@ app.post('/api/copy/restart', (req, res) => {
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
+  // An upload's bytes came from the browser and are gone once the request
+  // ended, so there is nothing to replay.
+  if (job.kind === 'upload') {
+    return res.status(400).json({ error: 'Uploads cannot be restarted' });
+  }
 
   // Retire the previous run first: SIGTERM is asynchronous, so the old child
   // is still alive and emitting when the new one spawns.
@@ -403,6 +418,304 @@ app.get('/api/config', async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Transfers between the browser and a remote
+// ---------------------------------------------------------------------------
+
+// rclone's own wording, so the numbers a job reports read the same whether the
+// job is an rclone copy or a browser upload the server is metering itself.
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let val = bytes;
+  let i = 0;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return `${val.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+function formatSpeed(bytesPerSec: number): string {
+  return bytesPerSec > 0 ? `${formatBytes(bytesPerSec)}/s` : '0 B/s';
+}
+
+function formatDuration(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return '0s';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  let out = '';
+  if (h > 0) out += `${h}h`;
+  if (m > 0) out += `${m}m`;
+  out += h === 0 && m === 0 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+  return out;
+}
+
+// A dropped folder arrives as one request per file carrying its path relative
+// to the drop target, so every segment has to be checked, not just the name.
+function relPathSegments(rel: unknown): string[] {
+  const segments = String(rel ?? '').split('/').filter(s => s.length > 0);
+  if (segments.length === 0) throw new Error('name is required');
+  if (segments.length > 32) throw new Error('Path is nested too deeply');
+  for (const seg of segments) {
+    // eslint-disable-next-line no-control-regex
+    if (seg === '.' || seg === '..' || /[\\\u0000-\u001f]/.test(seg) || seg.length > 255) {
+      throw new Error(`Invalid path segment: ${seg}`);
+    }
+  }
+  return segments;
+}
+
+// Join a validated relative path onto a pane's location. Local destinations go
+// back through resolveLocalPath so they stay confined to LOCAL_ROOT.
+function resolveUploadTarget(dest: string, segments: string[]): string {
+  const rel = segments.join('/');
+  if (isLocal(dest)) {
+    const sub = dest.startsWith('Local Filesystem:')
+      ? dest.slice('Local Filesystem:'.length).replace(/\/+$/, '')
+      : '';
+    return resolveLocalPath(`Local Filesystem:${sub}/${rel}`);
+  }
+  // As in /api/mkdir: `rclone listremotes` already returns the trailing colon,
+  // so only a bare remote name needs one added.
+  const clean = dest.replace(/\/+$/, '');
+  const spec = clean.includes(':') ? clean : `${clean}:`;
+  return spec.endsWith(':') ? `${spec}${rel}` : `${spec}/${rel}`;
+}
+
+// Stream one file from the browser straight into `rclone rcat`, so nothing is
+// buffered in the server and arbitrarily large files are fine. The transfer is
+// registered as a job, which is what puts it in the same progress panel as an
+// rclone copy.
+app.post('/api/upload', (req, res) => {
+  const dest = req.query.dest as string;
+  const name = req.query.name as string;
+  if (!dest || !name) {
+    return res.status(400).json({ error: 'dest and name query parameters are required' });
+  }
+
+  let target: string;
+  let segments: string[];
+  try {
+    segments = relPathSegments(name);
+    target = resolveUploadTarget(dest, segments);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  const autoRemoveSeconds = Math.min(3600, Math.max(0, parseInt(req.query.autoRemove as string) || 0));
+  const total = Number(req.headers['content-length']) || 0;
+  const jobId = randomUUID();
+  const runId = 1;
+  const startedAt = Date.now();
+
+  const job: CopyJob = {
+    id: jobId,
+    kind: 'upload',
+    source: segments[segments.length - 1],
+    destination: target,
+    progress: total > 0 ? '0%' : 'Uploading…',
+    status: 'running',
+    threads: 1,
+    autoRemoveSeconds,
+    elapsedTime: '0s',
+    speed: '0 B/s',
+    eta: '-',
+    runId,
+  };
+  activeJobs[jobId] = job;
+
+  // Null while this run has been superseded — stopped or dismissed by the user
+  // — exactly as startRcloneJob does.
+  const currentJob = () => {
+    const j = activeJobs[jobId];
+    return j && j.runId === runId ? j : null;
+  };
+
+  let received = 0;
+  let lastTick = 0;
+  const tick = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastTick < 250) return;
+    lastTick = now;
+    const j = currentJob();
+    if (!j) return;
+    const elapsed = (now - startedAt) / 1000;
+    const bps = elapsed > 0 ? received / elapsed : 0;
+    j.elapsedTime = formatDuration(elapsed);
+    j.speed = formatSpeed(bps);
+    if (total > 0) {
+      j.progress = `${Math.min(100, (received / total) * 100).toFixed(1)}%`;
+      j.eta = bps > 0 ? formatDuration(Math.max(0, total - received) / bps) : '-';
+    } else {
+      // No Content-Length (a chunked upload): report bytes instead of a
+      // percentage rather than inventing one.
+      j.progress = `${formatBytes(received)} sent`;
+    }
+  };
+
+  const child = spawn('rclone', ['rcat', target]);
+  activeProcesses[jobId] = { child, runId };
+
+  let stderr = '';
+  child.stderr.on('data', data => {
+    stderr = (stderr + data.toString()).slice(-2000);
+  });
+  // A killed or failed rcat leaves the pipe broken; without this the EPIPE
+  // would surface as an unhandled error and take the process down.
+  child.stdin.on('error', () => {});
+
+  req.on('data', chunk => {
+    received += chunk.length;
+    tick();
+  });
+  req.on('aborted', () => {
+    const j = currentJob();
+    if (j) {
+      j.runId++;
+      j.status = 'error';
+      j.progress = 'Upload cancelled';
+      j.speed = '0 B/s';
+      j.eta = '-';
+    }
+    cancelRun(jobId);
+  });
+
+  req.pipe(child.stdin);
+
+  child.on('close', (code, signal) => {
+    if (activeProcesses[jobId]?.runId === runId) delete activeProcesses[jobId];
+    req.unpipe(child.stdin);
+
+    const failure = stderr.trim().split('\n').pop()
+      || (signal ? `rclone rcat was terminated (${signal})` : `rclone rcat exited with code ${code}`);
+
+    const j = currentJob();
+    if (j) {
+      tick(true);
+      j.speed = '0 B/s';
+      j.eta = '-';
+      if (code === 0) {
+        j.status = 'completed';
+        j.progress = '100%';
+        if (autoRemoveSeconds > 0) {
+          removeTimers[jobId] = setTimeout(() => {
+            delete removeTimers[jobId];
+            if (activeJobs[jobId]?.runId === runId) delete activeJobs[jobId];
+          }, autoRemoveSeconds * 1000);
+        }
+      } else {
+        j.status = 'error';
+        j.error = failure;
+      }
+    }
+
+    if (res.headersSent) return;
+    if (code === 0) {
+      res.json({ jobId, message: 'Upload complete' });
+    } else if (!j) {
+      // currentJob() went null: the run was retired by /copy/stop or
+      // /copy/remove, i.e. the user cancelled it on purpose.
+      res.status(409).json({ jobId, cancelled: true, error: 'Upload stopped' });
+    } else {
+      res.status(500).json({ jobId, error: failure });
+    }
+  });
+
+  child.on('error', error => {
+    const j = currentJob();
+    if (j) {
+      j.status = 'error';
+      j.error = error.message;
+      j.speed = '0 B/s';
+      j.eta = '-';
+    }
+    if (!res.headersSent) res.status(500).json({ jobId, error: error.message });
+  });
+});
+
+// Build a Content-Disposition that survives non-ASCII names and cannot inject
+// a header of its own.
+function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+// Last segment of a pane path: after the final slash, or after the remote's
+// colon when the file sits at a remote's root.
+function baseName(spec: string): string {
+  const afterSlash = spec.slice(spec.lastIndexOf('/') + 1);
+  const colon = afterSlash.lastIndexOf(':');
+  return colon >= 0 ? afterSlash.slice(colon + 1) : afterSlash;
+}
+
+// Stream a single file back to the browser. Folders are refused: the client
+// downloads a selection as one request per file, so nothing here has to build
+// an archive or hold a file in memory.
+app.get('/api/download', async (req, res) => {
+  const targetPath = req.query.path as string;
+  if (!targetPath) {
+    return res.status(400).json({ error: 'path query parameter is required' });
+  }
+
+  const name = baseName(targetPath);
+  if (!name) {
+    return res.status(400).json({ error: 'path does not name a file' });
+  }
+
+  let rclonePath: string;
+  try {
+    rclonePath = toRclonePath(targetPath);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  // Local files go out through res.download, which adds range support and the
+  // right length without another rclone process in the way.
+  if (isLocal(targetPath)) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(rclonePath);
+    } catch {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (stat.isDirectory()) {
+      return res.status(400).json({ error: 'Folders cannot be downloaded' });
+    }
+    return res.download(rclonePath, name);
+  }
+
+  // Stat first so a missing file or a folder becomes a clean JSON error
+  // instead of a truncated download.
+  let size: number | null = null;
+  try {
+    const { stdout } = await execFileAsync('rclone', ['lsjson', '--stat', rclonePath]);
+    const info = JSON.parse(stdout);
+    if (info?.IsDir) {
+      return res.status(400).json({ error: 'Folders cannot be downloaded' });
+    }
+    if (typeof info?.Size === 'number' && info.Size >= 0) size = info.Size;
+  } catch (error: any) {
+    console.error(`Error stating ${targetPath}:`, error);
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', contentDisposition(name));
+  if (size !== null) res.setHeader('Content-Length', String(size));
+
+  const child = spawn('rclone', ['cat', rclonePath]);
+  child.stdout.pipe(res);
+  child.stderr.on('data', data => console.error(`rclone cat: ${data.toString().trim()}`));
+  child.on('error', error => {
+    console.error('Error starting rclone cat:', error);
+    res.destroy();
+  });
+  // The browser cancelling mid-download must not leave an rclone behind.
+  res.on('close', () => child.kill('SIGTERM'));
 });
 
 // Serve frontend static files securely strictly as a fallback behind exact API domains

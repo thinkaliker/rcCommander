@@ -9,6 +9,8 @@ export interface RcloneFile {
 
 export interface CopyJob {
     id: string;
+    /** 'upload' streams come from the browser and cannot be restarted. */
+    kind?: 'copy' | 'upload';
     source: string;
     destination: string;
     progress: string;
