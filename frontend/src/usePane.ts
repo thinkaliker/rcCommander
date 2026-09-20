@@ -32,15 +32,22 @@ const sortFiles = (files: RcloneFile[]) =>
  * later. Listings are guarded by a monotonic request id: navigating away or
  * an overlapping auto-refresh means only the newest response is allowed to
  * write state, so a slow earlier reply can't clobber the current directory.
+ *
+ * Auto-refresh follows the global interval from settings. With `perPane` on,
+ * the pane may hold an override of its own; until one is set it still tracks
+ * the global value, so turning the option on never silently stops a refresh
+ * that was already running.
  */
-export function usePane(ready: boolean): PaneState {
+export function usePane(ready: boolean, globalAutoRefresh: number, perPane: boolean): PaneState {
   const [remote, setRemote] = useState('Local Filesystem');
   const [path, setPath] = useState('');
   const [files, setFiles] = useState<RcloneFile[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(0);
+  const [paneAutoRefresh, setPaneAutoRefresh] = useState<number | null>(null);
+
+  const autoRefresh = perPane ? paneAutoRefresh ?? globalAutoRefresh : globalAutoRefresh;
 
   const requestId = useRef(0);
 
@@ -109,7 +116,7 @@ export function usePane(ready: boolean): PaneState {
 
   return {
     remote, path, files, selected, loading, error, autoRefresh,
-    setRemote, setPath, setAutoRefresh,
+    setRemote, setPath, setAutoRefresh: setPaneAutoRefresh,
     toggleFile, toggleAll, clearSelection,
     refresh: load,
   };

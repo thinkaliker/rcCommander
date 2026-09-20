@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowLeftRight, ArrowRight, Monitor, Moon, RefreshCw, RotateCcw,
+  ArrowLeft, ArrowLeftRight, ArrowRight, Monitor, Moon, RotateCcw,
   Settings2, Square, Sun, X,
 } from 'lucide-react';
 import './App.css';
 import { Pane } from './components/Pane';
-import type { DragPayload, DropTarget } from './components/Pane';
+import type { DragItem, DragPayload, DropTarget } from './components/Pane';
 import { API_BASE, apiGet, apiPost, remotePath } from './api';
 import {
   fileName, formatDuration, formatSpeed, parseDuration, parseSpeed, progressPercent,
@@ -13,9 +13,19 @@ import {
 import { usePane } from './usePane';
 import { useTheme } from './useTheme';
 import type { ThemeChoice } from './useTheme';
+import { clampAutoRefresh, clampAutoRemove, clampThreads, useSettings } from './useSettings';
 import type { CopyJob } from './types';
 
 const LOCAL = 'Local Filesystem';
+
+/** One pane-to-pane transfer, before the thread/auto-remove numbers are applied. */
+interface CopyRequest {
+  sourceRemote: string;
+  sourcePath: string;
+  destRemote: string;
+  destPath: string;
+  items: DragItem[];
+}
 
 const THEMES: { id: ThemeChoice; label: string; Icon: typeof Sun }[] = [
   { id: 'light', label: 'Light theme', Icon: Sun },
@@ -29,18 +39,22 @@ function App() {
   // so the right pane never shows Local Filesystem and then jump to a remote.
   const [remotesReady, setRemotesReady] = useState(false);
 
-  const left = usePane(remotesReady);
-  const right = usePane(remotesReady);
+  const [settings, setSettings] = useSettings();
+
+  const left = usePane(remotesReady, settings.autoRefresh, settings.perPaneRefresh);
+  const right = usePane(remotesReady, settings.autoRefresh, settings.perPaneRefresh);
 
   const [activeJobs, setActiveJobs] = useState<Record<string, CopyJob>>({});
   const [isConnected, setIsConnected] = useState(true);
   const [theme, setTheme] = useTheme();
 
-  const [copyDirection, setCopyDirection] = useState<'L2R' | 'R2L' | null>(null);
-  const [threads, setThreads] = useState(4);
-  const [autoRemove, setAutoRemove] = useState(5);
+  // The transfer waiting on the confirm dialog, and the numbers that dialog is
+  // editing — a draft, so an override here does not rewrite the saved defaults.
+  const [pendingCopy, setPendingCopy] = useState<CopyRequest | null>(null);
+  const [draftThreads, setDraftThreads] = useState(settings.threads);
+  const [draftAutoRemove, setDraftAutoRemove] = useState(settings.autoRemove);
   const [configDetails, setConfigDetails] = useState<{ path: string; dump: string; error?: string } | null>(null);
-  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [mkdirTarget, setMkdirTarget] = useState<{ remote: string; path: string; side: 'left' | 'right' } | null>(null);
   const [mkdirName, setMkdirName] = useState('');
   const [mkdirError, setMkdirError] = useState('');
@@ -137,43 +151,79 @@ function App() {
     };
   }, []);
 
-  const startCopy = useCallback(async (source: string, destination: string) => {
+  const startCopy = useCallback(async (
+    source: string, destination: string, threads: number, autoRemoveSeconds: number,
+  ) => {
     try {
-      await apiPost('/copy', { source, destination, threads, autoRemoveSeconds: autoRemove });
+      await apiPost('/copy', { source, destination, threads, autoRemoveSeconds });
     } catch (e) {
       console.error(e);
     }
-  }, [threads, autoRemove]);
+  }, []);
 
-  const handleCopyConfirm = async () => {
-    const direction = copyDirection;
-    setCopyDirection(null);
-    if (!direction) return;
+  const runCopy = async (request: CopyRequest, threads: number, autoRemove: number) => {
+    await Promise.all(request.items.map(item => startCopy(
+      remotePath(request.sourceRemote, request.sourcePath, item.name),
+      // A folder keeps its own name at the destination; a file is copied into
+      // the destination directory itself.
+      remotePath(request.destRemote, request.destPath, item.isDir ? item.name : ''),
+      threads,
+      autoRemove,
+    )));
 
+    // Only the pane the items actually came from loses its ticks — the other
+    // pane may be showing an unrelated selection of its own.
+    for (const pane of [left, right]) {
+      if (pane.remote === request.sourceRemote && pane.path === request.sourcePath) pane.clearSelection();
+    }
+  };
+
+  // Every transfer funnels through here, so the saved defaults and the
+  // "ask every time" choice apply to the arrow buttons and to drag and drop alike.
+  const requestCopy = (request: CopyRequest) => {
+    if (request.items.length === 0) return;
+    if (settings.askEveryTime) {
+      setDraftThreads(settings.threads);
+      setDraftAutoRemove(settings.autoRemove);
+      setPendingCopy(request);
+      return;
+    }
+    runCopy(request, settings.threads, settings.autoRemove);
+  };
+
+  const handlePaneCopy = (direction: 'L2R' | 'R2L') => {
     const src = direction === 'L2R' ? left : right;
     const dest = direction === 'L2R' ? right : left;
+    requestCopy({
+      sourceRemote: src.remote,
+      sourcePath: src.path,
+      destRemote: dest.remote,
+      destPath: dest.path,
+      items: Array.from(src.selected).map(name => ({
+        name,
+        isDir: src.files.find(f => f.Name === name)?.IsDir ?? false,
+      })),
+    });
+  };
 
-    await Promise.all(Array.from(src.selected).map(name => {
-      const entry = src.files.find(f => f.Name === name);
-      return startCopy(
-        remotePath(src.remote, src.path, name),
-        remotePath(dest.remote, dest.path, entry?.IsDir ? name : '')
-      );
-    }));
-
-    left.clearSelection();
-    right.clearSelection();
+  const handleCopyConfirm = () => {
+    const request = pendingCopy;
+    setPendingCopy(null);
+    if (request) runCopy(request, draftThreads, draftAutoRemove);
   };
 
   const handleDragAndDrop = (source: DragPayload, dest: DropTarget) => {
-    startCopy(
-      remotePath(source.sourceRemote, source.sourcePath, source.fileName),
-      remotePath(dest.destRemote, dest.destPath, source.isDir ? source.fileName : '')
-    );
+    requestCopy({
+      sourceRemote: source.sourceRemote,
+      sourcePath: source.sourcePath,
+      destRemote: dest.destRemote,
+      destPath: dest.destPath,
+      items: source.items,
+    });
   };
 
-  const showConfig = async () => {
-    setIsConfigOpen(true);
+  const openSettings = async () => {
+    setIsSettingsOpen(true);
     setConfigDetails(null);
     try {
       const data = await apiGet<{ path: string; dump: string; error?: string }>('/config');
@@ -240,7 +290,7 @@ function App() {
   }
   const avgSpeed = running.length > 0 ? totalSpeed / running.length : 0;
 
-  const pendingCount = copyDirection === 'L2R' ? left.selected.size : right.selected.size;
+  const pendingCount = pendingCopy?.items.length ?? 0;
 
   return (
     <div className="app">
@@ -267,8 +317,8 @@ function App() {
               </button>
             ))}
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={showConfig}>
-            <Settings2 size={14} /> Rclone Config
+          <button className="btn btn-sm btn-ghost" onClick={openSettings}>
+            <Settings2 size={14} /> Settings
           </button>
         </div>
       </header>
@@ -278,6 +328,7 @@ function App() {
           pane={left}
           remotes={remotes}
           onDropFile={handleDragAndDrop}
+          showAutoRefresh={settings.perPaneRefresh}
           onNewFolder={() => {
             setMkdirTarget({ remote: left.remote, path: left.path, side: 'left' });
             setMkdirName('');
@@ -291,7 +342,7 @@ function App() {
             title="Copy left pane selection to the right"
             aria-label="Copy left pane selection to the right"
             disabled={left.selected.size === 0}
-            onClick={() => setCopyDirection('L2R')}
+            onClick={() => handlePaneCopy('L2R')}
           >
             <ArrowRight size={20} />
           </button>
@@ -300,7 +351,7 @@ function App() {
             title="Copy right pane selection to the left"
             aria-label="Copy right pane selection to the left"
             disabled={right.selected.size === 0}
-            onClick={() => setCopyDirection('R2L')}
+            onClick={() => handlePaneCopy('R2L')}
           >
             <ArrowLeft size={20} />
           </button>
@@ -310,6 +361,7 @@ function App() {
           pane={right}
           remotes={remotes}
           onDropFile={handleDragAndDrop}
+          showAutoRefresh={settings.perPaneRefresh}
           onNewFolder={() => {
             setMkdirTarget({ remote: right.remote, path: right.path, side: 'right' });
             setMkdirName('');
@@ -322,12 +374,6 @@ function App() {
         <section className="jobs-panel">
           <div className="jobs-panel-header">
             <h2>Copy Jobs</h2>
-            <button
-              className="btn btn-sm btn-ghost"
-              onClick={() => { left.refresh(true); right.refresh(true); }}
-            >
-              <RefreshCw size={13} /> Refresh Folders
-            </button>
           </div>
 
           {running.length > 1 && (
@@ -396,22 +442,22 @@ function App() {
         </section>
       )}
 
-      {copyDirection && (
-        <div className="overlay" onClick={() => setCopyDirection(null)}>
+      {pendingCopy && (
+        <div className="overlay" onClick={() => setPendingCopy(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h2>Confirm Copy</h2>
             <p>
-              Copy {pendingCount} item{pendingCount === 1 ? '' : 's'} from the{' '}
-              {copyDirection === 'L2R' ? 'left' : 'right'} pane to the{' '}
-              {copyDirection === 'L2R' ? 'right' : 'left'}?
+              Copy {pendingCount} item{pendingCount === 1 ? '' : 's'} from{' '}
+              <strong>{remotePath(pendingCopy.sourceRemote, pendingCopy.sourcePath)}</strong> to{' '}
+              <strong>{remotePath(pendingCopy.destRemote, pendingCopy.destPath)}</strong>?
             </p>
 
             <div className="field">
               <label htmlFor="threads">Parallel transfers</label>
               <input
                 id="threads" className="input" type="number" min="1" max="16"
-                value={threads}
-                onChange={e => setThreads(Math.min(16, Math.max(1, parseInt(e.target.value) || 4)))}
+                value={draftThreads}
+                onChange={e => setDraftThreads(clampThreads(parseInt(e.target.value)))}
               />
             </div>
 
@@ -419,23 +465,89 @@ function App() {
               <label htmlFor="auto-remove">Auto-remove completed after (seconds, 0 to keep)</label>
               <input
                 id="auto-remove" className="input" type="number" min="0" max="3600"
-                value={autoRemove}
-                onChange={e => setAutoRemove(Math.max(0, parseInt(e.target.value) || 0))}
+                value={draftAutoRemove}
+                onChange={e => setDraftAutoRemove(clampAutoRemove(parseInt(e.target.value)))}
               />
             </div>
 
+            <p className="modal-note">
+              These apply to this transfer only. Change the defaults under Settings.
+            </p>
+
             <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => setCopyDirection(null)}>Cancel</button>
+              <button className="btn btn-ghost" onClick={() => setPendingCopy(null)}>Cancel</button>
               <button className="btn" onClick={handleCopyConfirm}>Start Copy</button>
             </div>
           </div>
         </div>
       )}
 
-      {isConfigOpen && (
-        <div className="overlay" onClick={() => setIsConfigOpen(false)}>
+      {isSettingsOpen && (
+        <div className="overlay" onClick={() => setIsSettingsOpen(false)}>
           <div className="modal is-wide" onClick={e => e.stopPropagation()}>
-            <h2>Rclone Configuration</h2>
+            <h2>Settings</h2>
+
+            <h3 className="modal-section">Transfer defaults</h3>
+
+            <div className="field">
+              <label htmlFor="default-threads">Parallel transfers</label>
+              <input
+                id="default-threads" className="input" type="number" min="1" max="16"
+                value={settings.threads}
+                onChange={e => setSettings(prev => ({ ...prev, threads: clampThreads(parseInt(e.target.value)) }))}
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="default-auto-remove">Auto-remove completed after (seconds, 0 to keep)</label>
+              <input
+                id="default-auto-remove" className="input" type="number" min="0" max="3600"
+                value={settings.autoRemove}
+                onChange={e => setSettings(prev => ({ ...prev, autoRemove: clampAutoRemove(parseInt(e.target.value)) }))}
+              />
+            </div>
+
+            <label className="field-check" htmlFor="ask-every-time">
+              <input
+                id="ask-every-time"
+                type="checkbox"
+                className="checkbox"
+                checked={settings.askEveryTime}
+                onChange={e => setSettings(prev => ({ ...prev, askEveryTime: e.target.checked }))}
+              />
+              <span>
+                Ask every time
+                <small>Confirm each transfer and let these numbers be changed for that one copy.</small>
+              </span>
+            </label>
+
+            <h3 className="modal-section">Folder listings</h3>
+
+            <div className="field">
+              <label htmlFor="auto-refresh">Auto-refresh both panes every (seconds, 0 to disable)</label>
+              <input
+                id="auto-refresh" className="input" type="number" min="0" max="3600"
+                value={settings.autoRefresh}
+                onChange={e => setSettings(prev => ({ ...prev, autoRefresh: clampAutoRefresh(parseInt(e.target.value)) }))}
+              />
+            </div>
+
+            <label className="field-check" htmlFor="per-pane-refresh">
+              <input
+                id="per-pane-refresh"
+                type="checkbox"
+                className="checkbox"
+                checked={settings.perPaneRefresh}
+                onChange={e => setSettings(prev => ({ ...prev, perPaneRefresh: e.target.checked }))}
+              />
+              <span>
+                Set per pane
+                <small>Show each pane its own auto-refresh control, starting from the interval above.</small>
+              </span>
+            </label>
+
+            <h3 className="modal-section">Rclone configuration</h3>
+
             {!configDetails ? (
               <div className="pane-empty">Loading config from the server…</div>
             ) : (
@@ -454,8 +566,9 @@ function App() {
                 )}
               </>
             )}
+
             <div className="modal-actions">
-              <button className="btn" onClick={() => setIsConfigOpen(false)}>Close</button>
+              <button className="btn" onClick={() => setIsSettingsOpen(false)}>Close</button>
             </div>
           </div>
         </div>

@@ -4,11 +4,15 @@ import { formatBytes } from '../format';
 import type { PaneState } from '../usePane';
 import type { RcloneFile } from '../types';
 
+export interface DragItem {
+  name: string;
+  isDir: boolean;
+}
+
 export interface DragPayload {
   sourceRemote: string;
   sourcePath: string;
-  fileName: string;
-  isDir: boolean;
+  items: DragItem[];
 }
 
 export interface DropTarget {
@@ -21,6 +25,9 @@ interface PaneProps {
   remotes: string[];
   onDropFile: (source: DragPayload, dest: DropTarget) => void;
   onNewFolder: () => void;
+  /** Off by default: the auto-refresh interval is a global setting unless the
+      user opts into setting it per pane. */
+  showAutoRefresh: boolean;
 }
 
 const joinPath = (base: string, name: string) => {
@@ -28,7 +35,7 @@ const joinPath = (base: string, name: string) => {
   return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`;
 };
 
-export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFolder }) => {
+export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFolder, showAutoRefresh }) => {
   const [pathInput, setPathInput] = useState(pane.path);
   const [syncedPath, setSyncedPath] = useState(pane.path);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -63,11 +70,27 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
     if (!raw) return;
     try {
       const data: DragPayload = JSON.parse(raw);
+      if (!Array.isArray(data.items) || data.items.length === 0) return;
       if (data.sourceRemote === pane.remote && data.sourcePath === pane.path) return;
       onDropFile(data, { destRemote: pane.remote, destPath: pane.path });
     } catch {
       /* not one of our drags */
     }
+  };
+
+  // Dragging a row that is part of the selection moves the whole selection;
+  // dragging an unselected row moves just that row and leaves the selection
+  // alone, which is how desktop file managers behave.
+  const handleDragStart = (e: React.DragEvent, file: RcloneFile) => {
+    const items: DragItem[] = pane.selected.has(file.Name)
+      ? pane.files.filter(f => pane.selected.has(f.Name)).map(f => ({ name: f.Name, isDir: f.IsDir }))
+      : [{ name: file.Name, isDir: file.IsDir }];
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('application/json', JSON.stringify({
+      sourceRemote: pane.remote,
+      sourcePath: pane.path,
+      items,
+    }));
   };
 
   const atRoot = pane.path === '' || pane.path === '/';
@@ -76,7 +99,7 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
   return (
     <section
       className={`pane${isDragOver ? ' is-drop-target' : ''}`}
-      onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
+      onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
     >
@@ -110,24 +133,26 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
             <FolderPlus size={13} /> New Folder
           </button>
         </div>
-        <div className="stepper-label">
-          <label htmlFor={`auto-${pane.remote}`}>Auto-refresh (s)</label>
-          <div className="stepper">
-            <button aria-label="Decrease" onClick={() => pane.setAutoRefresh(Math.max(0, pane.autoRefresh - 1))}>
-              <Minus size={12} />
-            </button>
-            <input
-              id={`auto-${pane.remote}`}
-              type="number"
-              min="0"
-              value={pane.autoRefresh}
-              onChange={e => pane.setAutoRefresh(Math.max(0, parseInt(e.target.value) || 0))}
-            />
-            <button aria-label="Increase" onClick={() => pane.setAutoRefresh(pane.autoRefresh + 1)}>
-              <Plus size={12} />
-            </button>
+        {showAutoRefresh && (
+          <div className="stepper-label">
+            <label htmlFor={`auto-${pane.remote}`}>Auto-refresh (s)</label>
+            <div className="stepper">
+              <button aria-label="Decrease" onClick={() => pane.setAutoRefresh(Math.max(0, pane.autoRefresh - 1))}>
+                <Minus size={12} />
+              </button>
+              <input
+                id={`auto-${pane.remote}`}
+                type="number"
+                min="0"
+                value={pane.autoRefresh}
+                onChange={e => pane.setAutoRefresh(Math.max(0, parseInt(e.target.value) || 0))}
+              />
+              <button aria-label="Increase" onClick={() => pane.setAutoRefresh(pane.autoRefresh + 1)}>
+                <Plus size={12} />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="file-list">
@@ -149,7 +174,7 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
             </div>
 
             {!atRoot && (
-              <div className="file-row is-dir" onClick={goUp} onDrop={handleDrop}>
+              <div className="file-row is-dir" onClick={goUp}>
                 <span className="checkbox" style={{ visibility: 'hidden' }} />
                 <span className="file-icon"><CornerLeftUp size={16} /></span>
                 <span className="file-name">..</span>
@@ -161,12 +186,7 @@ export const Pane: React.FC<PaneProps> = ({ pane, remotes, onDropFile, onNewFold
                 key={file.Name}
                 className={`file-row${file.IsDir ? ' is-dir' : ''}${pane.selected.has(file.Name) ? ' is-selected' : ''}`}
                 draggable
-                onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify({
-                  sourceRemote: pane.remote,
-                  sourcePath: pane.path,
-                  fileName: file.Name,
-                  isDir: file.IsDir,
-                }))}
+                onDragStart={e => handleDragStart(e, file)}
                 onClick={e => {
                   if ((e.target as HTMLElement).tagName === 'INPUT') return;
                   if (file.IsDir) navigate(file);

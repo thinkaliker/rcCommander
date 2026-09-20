@@ -832,6 +832,52 @@
   font-weight: 500;
 }
 
+/* Groups the settings modal into labelled blocks; the top border separates a
+   section from the fields above it without needing a divider element. */
+.modal-section {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.modal-section:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.field-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.86rem;
+  color: var(--text-strong);
+}
+
+.field-check .checkbox {
+  margin-top: 2px;
+}
+
+.field-check small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.modal-note {
+  margin-top: -4px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+
 .config-dump {
   min-height: 220px;
   resize: vertical;
