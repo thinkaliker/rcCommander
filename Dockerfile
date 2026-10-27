@@ -26,6 +26,8 @@ RUN cd frontend && npm run build
 COPY server/package*.json ./server/
 RUN cd server && npm install
 COPY server/ ./server/
+# tsx runs the server without type-checking, so catch type errors at build time
+RUN cd server && npm run typecheck
 
 # Copy entrypoint script and make it executable
 COPY entrypoint.sh /entrypoint.sh
