@@ -86,6 +86,10 @@ export function usePane(ready: boolean, globalAutoRefresh: number, perPane: bool
 
   useEffect(() => {
     if (!ready) return;
+    // A new directory starts with nothing selected. load() below already sets
+    // state synchronously, so React batches this into the same render rather
+    // than cascading into an extra one.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelected(new Set());
     load();
   }, [ready, load]);
