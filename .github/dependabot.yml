@@ -9,6 +9,12 @@ updates:
     directory: "/frontend" # Location of package manifests
     schedule:
       interval: "daily"
+    groups:
+      # @eslint/js peers on the matching eslint major, so they must move together
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/js"
     ignore:
       # typescript-eslint only supports TypeScript <6.1; remove once it supports 7
       - dependency-name: "typescript"
@@ -23,5 +29,9 @@ updates:
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker" # See documentation for possible values
     directory: "/" # Location of package manifests
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "github-actions" # actions used in .github/workflows
+    directory: "/"
     schedule:
       interval: "daily"
