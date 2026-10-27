@@ -9,6 +9,12 @@ updates:
     directory: "/frontend" # Location of package manifests
     schedule:
       interval: "daily"
+    groups:
+      # @eslint/js peers on the matching eslint major, so they must move together
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/js"
     ignore:
       # typescript-eslint only supports TypeScript <6.1; remove once it supports 7
       - dependency-name: "typescript"
