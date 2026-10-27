@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "ts-node index.ts",
-    "start": "ts-node index.ts"
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +20,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3"
   }
 }

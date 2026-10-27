@@ -1,0 +1,14 @@
+# Dependencies are installed inside the image; host copies would clobber them
+**/node_modules
+
+# Built inside the image
+**/dist
+**/build
+
+# Never bake secrets into the image
+**/.env
+**/.env.*
+
+.git
+**/.DS_Store
+**/*.log

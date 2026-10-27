@@ -9,10 +9,18 @@ updates:
     directory: "/frontend" # Location of package manifests
     schedule:
       interval: "daily"
+    ignore:
+      # typescript-eslint only supports TypeScript <6.1; remove once it supports 7
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "npm" # See documentation for possible values
     directory: "/server" # Location of package manifests
     schedule:
       interval: "daily"
+    ignore:
+      # Kept in step with /frontend, which is pinned to TypeScript 6
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker" # See documentation for possible values
     directory: "/" # Location of package manifests
     schedule:
