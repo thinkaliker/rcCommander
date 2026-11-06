@@ -12,6 +12,33 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/rccommander
 
 jobs:
+  # The image build never runs eslint, so lint-only dependencies (eslint,
+  # typescript-eslint, globals) are only exercised here.
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
   build-and-push-image:
     runs-on: ubuntu-latest
     permissions:
@@ -20,10 +47,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -31,7 +58,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -40,10 +67,65 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+      # Build into the local image store first, so the smoke test runs against
+      # the image that will be published, and nothing is pushed if it fails.
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true
+          tags: rccommander:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Same hardening as docker-compose.yml, so the test also covers how the
+      # image is deployed. e2e/fixtures stands in for the /mnt volume.
+      - name: Start container
+        run: |
+          docker run -d --name rccommander -p 127.0.0.1:3001:3001 \
+            -v "$GITHUB_WORKSPACE/e2e/fixtures:/mnt:ro" \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+            --cap-add SETUID --cap-add SETGID --cap-add SETPCAP \
+            rccommander:smoke
+          timeout 60 sh -c 'until curl -fsS http://localhost:3001/ >/dev/null; do sleep 1; done'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps --only-shell chromium
+
+      - name: Smoke test
+        working-directory: e2e
+        run: npm test
+
+      - name: Container logs
+        if: failure()
+        run: docker logs rccommander
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: e2e/test-results
+          if-no-files-found: ignore
+
+      # Every layer is cached from the build above, so this pushes the image
+      # that was just tested.
+      - name: Push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

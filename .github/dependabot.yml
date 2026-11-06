@@ -27,6 +27,10 @@ updates:
       # Kept in step with /frontend, which is pinned to TypeScript 6
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+  - package-ecosystem: "npm"
+    directory: "/e2e" # Playwright smoke test, run only in CI
+    schedule:
+      interval: "daily"
   - package-ecosystem: "docker" # See documentation for possible values
     directory: "/" # Location of package manifests
     schedule:
